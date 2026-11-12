@@ -1,0 +1,29 @@
+# Environment and secrets
+.env
+.env.*
+*.env
+
+# Rust build artifacts
+target/
+**/target/
+
+# .NET / C# build artifacts
+bin/
+obj/
+**/bin/
+**/obj/
+*.user
+*.suo
+
+# Backups and temporary files
+*.bak
+*.tmp
+*.log
+src.bak-before-settings/
+
+# IDE and OS files
+.vs/
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store

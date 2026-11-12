@@ -1,0 +1,434 @@
+<Window x:Class="DynamicIsland.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Dynamic Island"
+        Width="560"
+        Height="300"
+        WindowStyle="None"
+        AllowsTransparency="True"
+        Background="Transparent"
+        Topmost="True"
+        ShowInTaskbar="False"
+        ResizeMode="NoResize"
+        FontFamily="Segoe UI"
+        Foreground="White"
+        TextOptions.TextFormattingMode="Ideal"
+        UseLayoutRounding="True"
+        SnapsToDevicePixels="True">
+
+    <!-- The island: size + corner radius are driven by a spring in code-behind -->
+    <Grid x:Name="IslandContainer"
+          Width="190"
+          Height="34"
+          Margin="0,0,0,0"
+          HorizontalAlignment="Center"
+          VerticalAlignment="Top"
+          AllowDrop="True"
+          MouseEnter="IslandContainer_MouseEnter"
+          MouseLeave="IslandContainer_MouseLeave"
+          MouseLeftButtonDown="IslandContainer_MouseLeftButtonDown"
+          DragEnter="IslandContainer_DragEnter"
+          DragOver="IslandContainer_DragOver"
+          DragLeave="IslandContainer_DragLeave"
+          Drop="IslandContainer_Drop">
+
+        <Rectangle x:Name="IslandBg" Fill="Black" RadiusX="17" RadiusY="17">
+            <Rectangle.Effect>
+                <DropShadowEffect BlurRadius="28" ShadowDepth="8" Direction="270" Opacity="0.45" Color="Black" />
+            </Rectangle.Effect>
+        </Rectangle>
+        <Rectangle x:Name="IslandStroke" RadiusX="17" RadiusY="17" Stroke="#1AFFFFFF" StrokeThickness="1" IsHitTestVisible="False" />
+
+        <!-- Concave corners that blend the island into the screen edge (overlap 1px to hide the stroke) -->
+        <Path Data="M8,0 L0,0 A8,8 0 0 1 8,8 Z" Fill="Black" Width="8" Height="8" Margin="-7,0,0,0"
+              HorizontalAlignment="Left" VerticalAlignment="Top" IsHitTestVisible="False" />
+        <Path Data="M0,0 L8,0 A8,8 0 0 0 0,8 Z" Fill="Black" Width="8" Height="8" Margin="0,0,-7,0"
+              HorizontalAlignment="Right" VerticalAlignment="Top" IsHitTestVisible="False" />
+
+        <Grid x:Name="ContentHost">
+
+            <!-- ===================== 1. COMPACT ===================== -->
+            <Grid x:Name="CompactView" Width="190" Height="34"
+                  HorizontalAlignment="Center" VerticalAlignment="Top"
+                  RenderTransformOrigin="0.5,0.5">
+                <Grid.RenderTransform>
+                    <ScaleTransform />
+                </Grid.RenderTransform>
+
+                <TextBlock x:Name="CompactClockText" Text="10:15"
+                           Margin="16,0,0,1" HorizontalAlignment="Left" VerticalAlignment="Center"
+                           FontSize="12.5" FontWeight="SemiBold" />
+
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,15,0">
+                    <Border x:Name="CompactShelfBadge" Visibility="Collapsed"
+                            Background="{StaticResource AccentGradient}" CornerRadius="8"
+                            MinWidth="16" Height="16" Padding="4,0" Margin="0,0,8,0" VerticalAlignment="Center">
+                        <TextBlock x:Name="CompactShelfText" Text="1" FontSize="10" FontWeight="SemiBold"
+                                   HorizontalAlignment="Center" VerticalAlignment="Center" />
+                    </Border>
+                    <TextBlock x:Name="CompactTimerText" Visibility="Collapsed" Text="25:00"
+                               Foreground="{StaticResource AccentBrush}"
+                               FontSize="12.5" FontWeight="SemiBold" VerticalAlignment="Center" Margin="0,0,0,1" />
+                    <StackPanel x:Name="CompactBars" Orientation="Horizontal" Height="14" VerticalAlignment="Center">
+                        <Rectangle x:Name="EqBar1" Width="3" RadiusX="1.5" RadiusY="1.5" Fill="{StaticResource AccentGradient}" Margin="0,0,2.5,0" RenderTransformOrigin="0.5,0.5">
+                            <Rectangle.RenderTransform>
+                                <ScaleTransform ScaleY="0.4" />
+                            </Rectangle.RenderTransform>
+                        </Rectangle>
+                        <Rectangle x:Name="EqBar2" Width="3" RadiusX="1.5" RadiusY="1.5" Fill="{StaticResource AccentGradient}" Margin="0,0,2.5,0" RenderTransformOrigin="0.5,0.5">
+                            <Rectangle.RenderTransform>
+                                <ScaleTransform ScaleY="0.8" />
+                            </Rectangle.RenderTransform>
+                        </Rectangle>
+                        <Rectangle x:Name="EqBar3" Width="3" RadiusX="1.5" RadiusY="1.5" Fill="{StaticResource AccentGradient}" Margin="0,0,2.5,0" RenderTransformOrigin="0.5,0.5">
+                            <Rectangle.RenderTransform>
+                                <ScaleTransform ScaleY="0.55" />
+                            </Rectangle.RenderTransform>
+                        </Rectangle>
+                        <Rectangle x:Name="EqBar4" Width="3" RadiusX="1.5" RadiusY="1.5" Fill="{StaticResource AccentGradient}" RenderTransformOrigin="0.5,0.5">
+                            <Rectangle.RenderTransform>
+                                <ScaleTransform ScaleY="0.3" />
+                            </Rectangle.RenderTransform>
+                        </Rectangle>
+                    </StackPanel>
+                </StackPanel>
+            </Grid>
+
+            <!-- ===================== 2. TOAST ===================== -->
+            <Grid x:Name="ToastView" Width="344" Height="58" Opacity="0" IsHitTestVisible="False"
+                  HorizontalAlignment="Center" VerticalAlignment="Top"
+                  RenderTransformOrigin="0.5,0.5">
+                <Grid.RenderTransform>
+                    <ScaleTransform />
+                </Grid.RenderTransform>
+                <Grid Margin="11,0,20,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+
+                    <Grid Width="36" Height="36" VerticalAlignment="Center">
+                        <Ellipse x:Name="ToastIconBg" Fill="#2E5AA2FF" />
+                        <TextBlock x:Name="ToastIconGlyph" Text="&#xE946;" FontFamily="{StaticResource IconFont}"
+                                   FontSize="15" Foreground="{StaticResource AccentBrush}"
+                                   HorizontalAlignment="Center" VerticalAlignment="Center" />
+                    </Grid>
+
+                    <StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="11,0,10,0">
+                        <TextBlock x:Name="ToastTitleText" Text="Titel" FontSize="13" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                        <TextBlock x:Name="ToastMessageText" Text="Nachricht" FontSize="11.5"
+                                   Foreground="{StaticResource TextSecondary}" TextTrimming="CharacterEllipsis" />
+                        <Border x:Name="ToastProgressTrack" Height="3" CornerRadius="1.5" Margin="0,5,0,0"
+                                Background="{StaticResource TrackBrush}" Visibility="Collapsed">
+                            <Border x:Name="ToastProgressFill" CornerRadius="1.5" Background="{StaticResource AccentBrush}" RenderTransformOrigin="0,0.5">
+                                <Border.RenderTransform>
+                                    <ScaleTransform ScaleX="0" />
+                                </Border.RenderTransform>
+                            </Border>
+                        </Border>
+                    </StackPanel>
+
+                    <TextBlock x:Name="ToastBadgeText" Grid.Column="2" Text="OK" FontSize="12" FontWeight="SemiBold"
+                               Foreground="{StaticResource AccentBrush}" VerticalAlignment="Center" />
+                </Grid>
+            </Grid>
+
+            <!-- ===================== 3. EXPANDED ===================== -->
+            <Grid x:Name="ExpandedView" Width="420" Height="198" Opacity="0" IsHitTestVisible="False"
+                  HorizontalAlignment="Center" VerticalAlignment="Top"
+                  RenderTransformOrigin="0.5,0.5">
+                <Grid.RenderTransform>
+                    <ScaleTransform />
+                </Grid.RenderTransform>
+
+                <Grid Margin="18,14,18,16">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="32" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+
+                    <!-- Header: clock + tabs + pin -->
+                    <Grid>
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="2,0,0,0">
+                            <TextBlock x:Name="ExpandedClockText" Text="10:15" FontSize="20" FontWeight="SemiBold" VerticalAlignment="Bottom" />
+                            <TextBlock x:Name="ExpandedDateText" Text="Do., 12. Nov." FontSize="11.5"
+                                       Foreground="{StaticResource TextSecondary}" VerticalAlignment="Bottom" Margin="8,0,0,3" />
+                        </StackPanel>
+
+                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+                            <Border Background="{StaticResource CardBrush}" CornerRadius="15" Height="30" Padding="2">
+                                <Grid>
+                                    <Border x:Name="TabHighlight" Width="36" Height="26" CornerRadius="13"
+                                            Background="#26FFFFFF" HorizontalAlignment="Left">
+                                        <Border.RenderTransform>
+                                            <TranslateTransform />
+                                        </Border.RenderTransform>
+                                    </Border>
+                                    <StackPanel Orientation="Horizontal">
+                                        <RadioButton x:Name="TabBtnHome" Style="{StaticResource TabButton}" GroupName="IslandTabs" Tag="0" Content="&#xE80F;" IsChecked="True" Checked="Tab_Checked" ToolTip="Übersicht" />
+                                        <RadioButton x:Name="TabBtnColor" Style="{StaticResource TabButton}" GroupName="IslandTabs" Tag="1" Content="&#xE790;" Checked="Tab_Checked" ToolTip="Farbwähler" />
+                                        <RadioButton x:Name="TabBtnFiles" Style="{StaticResource TabButton}" GroupName="IslandTabs" Tag="2" Content="&#xE8A5;" Checked="Tab_Checked" ToolTip="Datei-Ablage" />
+                                        <RadioButton x:Name="TabBtnFocus" Style="{StaticResource TabButton}" GroupName="IslandTabs" Tag="3" Content="&#xE916;" Checked="Tab_Checked" ToolTip="Fokus-Timer" />
+                                    </StackPanel>
+                                </Grid>
+                            </Border>
+                            <Button x:Name="PinButton" Style="{StaticResource IconButton}" Width="30" Height="30" Margin="6,0,0,0"
+                                    FontSize="12" Foreground="{StaticResource TextSecondary}" Background="{StaticResource CardBrush}"
+                                    Content="&#xE718;" Click="BtnTogglePin_Click" ToolTip="Offen halten" />
+                        </StackPanel>
+                    </Grid>
+
+                    <!-- Tab content -->
+                    <Grid Grid.Row="1" Margin="0,12,0,0">
+
+                        <!-- TAB 0: Overview -->
+                        <Grid x:Name="TabHome">
+                            <Grid.RenderTransform>
+                                <TranslateTransform />
+                            </Grid.RenderTransform>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="36" />
+                                <RowDefinition Height="*" />
+                            </Grid.RowDefinitions>
+
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                    <Button Style="{StaticResource IconButton}" Width="34" Height="34" Content="&#xE892;" Click="BtnMediaPrev_Click" ToolTip="Vorheriger Titel" />
+                                    <Button Style="{StaticResource IconButton}" Width="36" Height="36" FontSize="16" Background="{StaticResource AccentGradient}" Margin="4,0" Content="&#xE768;" Click="BtnMediaPlayPause_Click" ToolTip="Wiedergabe / Pause" />
+                                    <Button Style="{StaticResource IconButton}" Width="34" Height="34" Content="&#xE893;" Click="BtnMediaNext_Click" ToolTip="Nächster Titel" />
+                                </StackPanel>
+
+                                <Border Grid.Column="1" Background="{StaticResource CardBrush}" CornerRadius="18" Margin="10,0,0,0" Padding="4,0,14,0">
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <Button x:Name="MuteButton" Style="{StaticResource IconButton}" Width="28" Height="28" FontSize="13"
+                                                Content="&#xE767;" Click="BtnMuteToggle_Click" ToolTip="Stumm" />
+                                        <Slider x:Name="VolumeSlider" Grid.Column="1" Style="{StaticResource IslandSlider}"
+                                                Minimum="0" Maximum="100" Value="50" Margin="6,0,10,0"
+                                                VerticalAlignment="Center" ValueChanged="VolumeSlider_ValueChanged" />
+                                        <TextBlock x:Name="ExpandedVolumeText" Grid.Column="2" Text="50" Width="22" TextAlignment="Right"
+                                                   FontSize="11.5" FontWeight="SemiBold" Foreground="{StaticResource TextSecondary}" VerticalAlignment="Center" />
+                                    </Grid>
+                                </Border>
+                            </Grid>
+
+                            <UniformGrid Grid.Row="1" Columns="3" Margin="0,10,0,0">
+                                <Border Background="{StaticResource CardBrush}" CornerRadius="16" Padding="13,9,13,11" Margin="0,0,4,0">
+                                    <StackPanel VerticalAlignment="Center">
+                                        <TextBlock Text="CPU" FontSize="10.5" Foreground="{StaticResource TextSecondary}" />
+                                        <TextBlock x:Name="CardCpuText" Text="0 %" FontSize="17" FontWeight="SemiBold" Margin="0,1,0,6" />
+                                        <Border Height="4" CornerRadius="2" Background="{StaticResource TrackBrush}">
+                                            <Border x:Name="CardCpuBar" CornerRadius="2" Background="{StaticResource AccentGradientH}" RenderTransformOrigin="0,0.5">
+                                                <Border.RenderTransform>
+                                                    <ScaleTransform ScaleX="0" />
+                                                </Border.RenderTransform>
+                                            </Border>
+                                        </Border>
+                                    </StackPanel>
+                                </Border>
+                                <Border Background="{StaticResource CardBrush}" CornerRadius="16" Padding="13,9,13,11" Margin="2,0,2,0">
+                                    <StackPanel VerticalAlignment="Center">
+                                        <TextBlock x:Name="CardRamLabel" Text="RAM" FontSize="10.5" Foreground="{StaticResource TextSecondary}" TextTrimming="CharacterEllipsis" />
+                                        <TextBlock x:Name="CardRamText" Text="0 %" FontSize="17" FontWeight="SemiBold" Margin="0,1,0,6" />
+                                        <Border Height="4" CornerRadius="2" Background="{StaticResource TrackBrush}">
+                                            <Border x:Name="CardRamBar" CornerRadius="2" Background="{StaticResource AccentGradientH}" RenderTransformOrigin="0,0.5">
+                                                <Border.RenderTransform>
+                                                    <ScaleTransform ScaleX="0" />
+                                                </Border.RenderTransform>
+                                            </Border>
+                                        </Border>
+                                    </StackPanel>
+                                </Border>
+                                <Border Background="{StaticResource CardBrush}" CornerRadius="16" Padding="13,9,13,11" Margin="4,0,0,0">
+                                    <StackPanel VerticalAlignment="Center">
+                                        <TextBlock x:Name="CardPowerLabel" Text="Akku" FontSize="10.5" Foreground="{StaticResource TextSecondary}" TextTrimming="CharacterEllipsis" />
+                                        <TextBlock x:Name="CardBatteryText" Text="100 %" FontSize="17" FontWeight="SemiBold" Margin="0,1,0,6" />
+                                        <Border Height="4" CornerRadius="2" Background="{StaticResource TrackBrush}">
+                                            <Border x:Name="CardBatteryBar" CornerRadius="2" Background="{StaticResource AccentGradientH}" RenderTransformOrigin="0,0.5">
+                                                <Border.RenderTransform>
+                                                    <ScaleTransform ScaleX="1" />
+                                                </Border.RenderTransform>
+                                            </Border>
+                                        </Border>
+                                    </StackPanel>
+                                </Border>
+                            </UniformGrid>
+                        </Grid>
+
+                        <!-- TAB 1: Colour picker -->
+                        <Grid x:Name="TabColor" Opacity="0" IsHitTestVisible="False">
+                            <Grid.RenderTransform>
+                                <TranslateTransform />
+                            </Grid.RenderTransform>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="88" />
+                                <RowDefinition Height="*" />
+                            </Grid.RowDefinitions>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="88" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+
+                            <Grid Width="88" Height="88">
+                                <Grid.Clip>
+                                    <RectangleGeometry Rect="0,0,88,88" RadiusX="22" RadiusY="22" />
+                                </Grid.Clip>
+                                <Border x:Name="ColorSwatch" Background="{StaticResource AccentGradient}" />
+                                <Image x:Name="LoupeImage" Stretch="Fill" Visibility="Collapsed" RenderOptions.BitmapScalingMode="NearestNeighbor" />
+                                <Rectangle x:Name="LoupeMarker" Width="10" Height="10" Stroke="White" StrokeThickness="1" Visibility="Collapsed"
+                                           HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                <Border CornerRadius="22" BorderBrush="#24FFFFFF" BorderThickness="1" />
+                            </Grid>
+
+                            <StackPanel Grid.Column="1" Margin="16,0,0,0" VerticalAlignment="Center">
+                                <Grid>
+                                    <Button x:Name="HexButton" Style="{StaticResource TextButton}" HorizontalAlignment="Left"
+                                            Click="BtnCopyHex_Click" ToolTip="HEX kopieren">
+                                        <TextBlock x:Name="HexText" Text="#5AA2FF" FontSize="22" FontWeight="SemiBold" />
+                                    </Button>
+                                    <Button x:Name="PipetteButton" Style="{StaticResource PillButton}" HorizontalAlignment="Right"
+                                            Click="BtnPipette_Click">
+                                        <StackPanel Orientation="Horizontal">
+                                            <TextBlock Text="&#xEF3C;" FontFamily="{StaticResource IconFont}" FontSize="12" VerticalAlignment="Center" Margin="0,1,6,0" />
+                                            <TextBlock x:Name="PipetteButtonText" Text="Pipette" VerticalAlignment="Center" />
+                                        </StackPanel>
+                                    </Button>
+                                </Grid>
+                                <StackPanel Orientation="Horizontal" Margin="0,7,0,0">
+                                    <Button x:Name="RgbChip" Style="{StaticResource ChipButton}" Content="RGB 90, 162, 255" Click="BtnCopyRgb_Click" Margin="0,0,6,0" ToolTip="RGB kopieren" />
+                                    <Button x:Name="HslChip" Style="{StaticResource ChipButton}" Content="HSL 214°, 100%, 68%" Click="BtnCopyHsl_Click" ToolTip="HSL kopieren" />
+                                </StackPanel>
+                                <TextBlock x:Name="ColorHintText" Text="Wert anklicken zum Kopieren" FontSize="10.5"
+                                           Foreground="{StaticResource TextTertiary}" Margin="1,8,0,0" TextTrimming="CharacterEllipsis" />
+                            </StackPanel>
+
+                            <StackPanel x:Name="ColorHistoryPanel" Grid.Row="1" Grid.ColumnSpan="2" Orientation="Horizontal"
+                                        VerticalAlignment="Bottom" Height="20" />
+                        </Grid>
+
+                        <!-- TAB 2: File shelf -->
+                        <Grid x:Name="TabFiles" Opacity="0" IsHitTestVisible="False">
+                            <Grid.RenderTransform>
+                                <TranslateTransform />
+                            </Grid.RenderTransform>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="18" />
+                                <RowDefinition Height="*" />
+                            </Grid.RowDefinitions>
+
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock x:Name="FilesInfoText" Text="Ablage ist leer" FontSize="11" Margin="2,0,10,0"
+                                           Foreground="{StaticResource TextSecondary}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                                <Button Grid.Column="1" Style="{StaticResource TextButton}" Click="BtnShareOpen_Click" VerticalAlignment="Center"
+                                        ToolTip="QR-Code: Dateien mit dem Handy austauschen">
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="&#xED14;" FontFamily="{StaticResource IconFont}" FontSize="11"
+                                                   Foreground="{StaticResource AccentBrush}" VerticalAlignment="Center" Margin="0,1,4,0" />
+                                        <TextBlock Text="Handy" FontSize="11" FontWeight="SemiBold" Foreground="{StaticResource AccentBrush}" />
+                                    </StackPanel>
+                                </Button>
+                                <Button x:Name="FilesClearButton" Grid.Column="2" Style="{StaticResource TextButton}" Visibility="Collapsed"
+                                        Click="BtnFilesClear_Click" VerticalAlignment="Center" Margin="12,0,0,0">
+                                    <TextBlock Text="Leeren" FontSize="11" FontWeight="SemiBold" Foreground="{StaticResource AccentBrush}" />
+                                </Button>
+                            </Grid>
+
+                            <Grid Grid.Row="1" Margin="0,8,0,0">
+                                <Grid x:Name="FilesEmptyState">
+                                    <Rectangle RadiusX="18" RadiusY="18" Stroke="#33FFFFFF" StrokeThickness="1" StrokeDashArray="4 4" Fill="#08FFFFFF" />
+                                    <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+                                        <TextBlock Text="&#xE896;" FontFamily="{StaticResource IconFont}" FontSize="18"
+                                                   Foreground="{StaticResource TextSecondary}" HorizontalAlignment="Center" />
+                                        <TextBlock Text="Dateien hier ablegen" FontSize="12" FontWeight="SemiBold" Margin="0,7,0,0" HorizontalAlignment="Center" />
+                                        <TextBlock Text="Wieder herausziehen oder als Link im WLAN teilen" FontSize="10.5"
+                                                   Foreground="{StaticResource TextTertiary}" Margin="0,2,0,0" HorizontalAlignment="Center" />
+                                    </StackPanel>
+                                </Grid>
+                                <ScrollViewer x:Name="FilesScroll" HorizontalScrollBarVisibility="Hidden" VerticalScrollBarVisibility="Disabled"
+                                              Focusable="False" PreviewMouseWheel="FilesScroll_PreviewMouseWheel">
+                                    <StackPanel x:Name="FilesPanel" Orientation="Horizontal" />
+                                </ScrollViewer>
+                            </Grid>
+
+                            <!-- Phone share: QR code for the hub page, covers the shelf while open -->
+                            <Grid x:Name="FilesSharePanel" Grid.RowSpan="2" Background="Black" Visibility="Collapsed">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <Border Width="120" Height="120" CornerRadius="14" Background="White" VerticalAlignment="Center">
+                                    <Image x:Name="QrImage" Stretch="Fill" RenderOptions.BitmapScalingMode="NearestNeighbor"
+                                           HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                </Border>
+                                <StackPanel Grid.Column="1" Margin="16,0,0,0" VerticalAlignment="Center">
+                                    <TextBlock Text="Mit dem Handy teilen" FontSize="15" FontWeight="SemiBold" />
+                                    <TextBlock Text="QR-Code scannen · gleiches WLAN" FontSize="11"
+                                               Foreground="{StaticResource TextSecondary}" Margin="0,1,0,0" />
+                                    <TextBlock x:Name="ShareHintText" Text="Ablage laden, Dateien und Text an den PC senden" FontSize="10.5"
+                                               Foreground="{StaticResource TextTertiary}" Margin="0,6,0,0" TextTrimming="CharacterEllipsis" />
+                                    <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                                        <Button Style="{StaticResource PillButton}" Content="Link kopieren" Click="BtnShareCopy_Click" />
+                                        <Button Style="{StaticResource ChipButton}" Height="28" Content="Ordner" Margin="6,0,0,0"
+                                                Click="BtnShareFolder_Click" ToolTip="Empfangene Dateien öffnen" />
+                                        <Button Style="{StaticResource ChipButton}" Height="28" Content="Schließen" Margin="6,0,0,0"
+                                                Click="BtnShareClose_Click" />
+                                    </StackPanel>
+                                </StackPanel>
+                            </Grid>
+                        </Grid>
+
+                        <!-- TAB 3: Focus timer -->
+                        <Grid x:Name="TabFocus" Opacity="0" IsHitTestVisible="False">
+                            <Grid.RenderTransform>
+                                <TranslateTransform />
+                            </Grid.RenderTransform>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+
+                            <Grid Width="108" Height="108" VerticalAlignment="Center" Margin="4,0,0,0">
+                                <Ellipse Margin="3" Stroke="{StaticResource TrackBrush}" StrokeThickness="6" />
+                                <Canvas Width="108" Height="108">
+                                    <Path x:Name="FocusRingArc" Stroke="{StaticResource AccentGradient}" StrokeThickness="6"
+                                          StrokeStartLineCap="Round" StrokeEndLineCap="Round" />
+                                </Canvas>
+                                <TextBlock x:Name="FocusTimerText" Text="25:00" FontSize="22" FontWeight="SemiBold"
+                                           HorizontalAlignment="Center" VerticalAlignment="Center" />
+                            </Grid>
+
+                            <StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="24,0,0,0">
+                                <TextBlock Text="Fokus" FontSize="15" FontWeight="SemiBold" />
+                                <TextBlock x:Name="FocusStatusText" Text="Bereit" FontSize="11" Foreground="{StaticResource TextSecondary}" Margin="0,1,0,0" />
+                                <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                                    <Button Style="{StaticResource ChipButton}" Content="15 min" Tag="15" Click="BtnFocusPreset_Click" Margin="0,0,6,0" />
+                                    <Button Style="{StaticResource ChipButton}" Content="25 min" Tag="25" Click="BtnFocusPreset_Click" Margin="0,0,6,0" />
+                                    <Button Style="{StaticResource ChipButton}" Content="50 min" Tag="50" Click="BtnFocusPreset_Click" />
+                                </StackPanel>
+                                <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                                    <Button x:Name="FocusToggleButton" Style="{StaticResource PillButton}" MinWidth="78" Content="Start" Click="BtnTimerToggle_Click" />
+                                    <Button Style="{StaticResource IconButton}" Width="28" Height="28" FontSize="12" Margin="6,0,0,0"
+                                            Background="{StaticResource CardBrush}" Content="&#xE72C;" Click="BtnTimerReset_Click" ToolTip="Zurücksetzen" />
+                                </StackPanel>
+                            </StackPanel>
+                        </Grid>
+                    </Grid>
+                </Grid>
+            </Grid>
+        </Grid>
+    </Grid>
+</Window>
