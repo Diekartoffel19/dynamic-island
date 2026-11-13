@@ -226,7 +226,7 @@ pub struct Gfx {
     offscreen: Option<ID2D1Bitmap1>,
     target_size: D2D_SIZE_U,
     shape: ID2D1Bitmap1,
-    shape_key: (f32, f32, f32, f32),
+    shape_key: (f32, f32, f32, f32, f32),
 
     solid: ID2D1SolidColorBrush,
     solid_b: ID2D1Brush,
@@ -236,8 +236,8 @@ pub struct Gfx {
     grad_accent: u8,
     /// Cached radial glow brush and its RGB key, dropped on `trim`.
     radial: Option<(ID2D1RadialGradientBrush, (u8, u8, u8))>,
-    /// Cached body mask geometry and `(x, w, h, r)` key, dropped on `trim`.
-    mask_geo: Option<(ID2D1Geometry, (f32, f32, f32, f32))>,
+    /// Cached body mask geometry and `(x, y, w, h, r)` key, dropped on `trim`.
+    mask_geo: Option<(ID2D1Geometry, (f32, f32, f32, f32, f32))>,
     shadow: ID2D1Effect,
     blur: ID2D1Effect,
     fillet: ID2D1PathGeometry,
@@ -391,7 +391,7 @@ impl Gfx {
                 offscreen: None,
                 target_size: size,
                 shape,
-                shape_key: (0.0, 0.0, 0.0, 0.0),
+                shape_key: (0.0, 0.0, 0.0, 0.0, 0.0),
                 solid_b: solid.cast()?,
                 solid,
                 grad_b: grad.cast()?,
@@ -709,11 +709,25 @@ impl Gfx {
 
     // ---- Island base: shadow, body, edge stroke, concave corners ----
 
-    pub fn island_base(&mut self, x0: f32, w: f32, h: f32, r: f32) {
-        let body = Rect::new(x0, -r, w, h + r);
+    /// Returns the monitor-edge clip rect whenever any side is docked against a screen border.
+    pub fn dock_clip(x0: f32, y0: f32, w: f32, h: f32, dock: (f32, f32, f32, f32)) -> Option<Rect> {
+        let (dl, dt, dr, db) = dock;
+        if dl <= 0.001 && dt <= 0.001 && dr <= 0.001 && db <= 0.001 {
+            return None;
+        }
+        let left = if dl > 0.001 { x0 } else { -1000.0 };
+        let top = if dt > 0.001 { y0 } else { -1000.0 };
+        let right = if dr > 0.001 { x0 + w } else { 2000.0 };
+        let bottom = if db > 0.001 { y0 + h } else { 2000.0 };
+        Some(Rect::new(left, top, right - left, bottom - top))
+    }
+
+    pub fn island_base(&mut self, x0: f32, y0: f32, w: f32, h: f32, r: f32, dock: (f32, f32, f32, f32)) -> Rect {
+        let (dl, dt, dr, db) = dock;
+        let body = Rect::new(x0 - r * dl, y0 - r * dt, w + r * (dl + dr), h + r * (dt + db));
         unsafe {
-            // The shadow input only changes while the spring moves.
-            let key = (x0, w, h, r);
+            // The shadow input only changes while the spring or edge-dock blend moves.
+            let key = (body.x, body.y, body.w, body.h, r);
             if key != self.shape_key {
                 self.shape_key = key;
                 self.dc.SetTarget(&self.shape);
@@ -724,7 +738,13 @@ impl Gfx {
                 self.alpha = saved;
                 self.dc.SetTarget(&self.back);
             }
+        }
 
+        let clip = Self::dock_clip(x0, y0, w, h, dock);
+        if let Some(c) = clip {
+            self.push_clip(c);
+        }
+        unsafe {
             // WPF DropShadowEffect: BlurRadius 28, ShadowDepth 8 (down), Opacity 0.45.
             let sigma: f32 = 28.0 / 3.0;
             let colour: [f32; 4] = [0.0, 0.0, 0.0, 0.45 * self.alpha];
@@ -739,18 +759,36 @@ impl Gfx {
         let black = Paint::Solid(argb(0xFF000000));
         self.fill_rrect(body, r, black);
         self.stroke_rrect(body.inset(0.5), (r - 0.5).max(0.0), argb(0x1AFFFFFF), 1.0, false);
+        if clip.is_some() {
+            self.pop_clip();
+        }
 
-        // Left corner sits at x0-7 .. x0+1 (1 px overlap hides the stroke), right one is mirrored.
+        // Concave corner fillets along docked monitor edges (faded out on corners where two edges meet).
+        let fillets = [
+            (dt * (1.0 - dl), Matrix3x2 { M11: 1.0, M12: 0.0, M21: 0.0, M22: 1.0, M31: x0 - 7.0, M32: y0 }),
+            (dt * (1.0 - dr), Matrix3x2 { M11: -1.0, M12: 0.0, M21: 0.0, M22: 1.0, M31: x0 + w + 7.0, M32: y0 }),
+            (db * (1.0 - dl), Matrix3x2 { M11: 1.0, M12: 0.0, M21: 0.0, M22: -1.0, M31: x0 - 7.0, M32: y0 + h }),
+            (db * (1.0 - dr), Matrix3x2 { M11: -1.0, M12: 0.0, M21: 0.0, M22: -1.0, M31: x0 + w + 7.0, M32: y0 + h }),
+            (dl * (1.0 - dt), Matrix3x2 { M11: 0.0, M12: 1.0, M21: 1.0, M22: 0.0, M31: x0, M32: y0 - 7.0 }),
+            (dl * (1.0 - db), Matrix3x2 { M11: 0.0, M12: -1.0, M21: 1.0, M22: 0.0, M31: x0, M32: y0 + h + 7.0 }),
+            (dr * (1.0 - dt), Matrix3x2 { M11: 0.0, M12: 1.0, M21: -1.0, M22: 0.0, M31: x0 + w, M32: y0 - 7.0 }),
+            (dr * (1.0 - db), Matrix3x2 { M11: 0.0, M12: -1.0, M21: -1.0, M22: 0.0, M31: x0 + w, M32: y0 + h + 7.0 }),
+        ];
+        let saved_alpha = self.alpha;
         let dc = self.dc.clone();
         let fillet = self.fillet.clone();
-        self.push_translate(x0 - 7.0, 0.0);
-        let b = self.brush(black, Rect::default());
-        unsafe { dc.FillGeometry(&fillet, b, None) };
-        self.pop_xf();
-        self.push_xf(Matrix3x2 { M11: -1.0, M12: 0.0, M21: 0.0, M22: 1.0, M31: x0 + w + 7.0, M32: 0.0 });
-        let b = self.brush(black, Rect::default());
-        unsafe { dc.FillGeometry(&fillet, b, None) };
-        self.pop_xf();
+        for (weight, m) in fillets {
+            if weight <= 0.01 {
+                continue;
+            }
+            self.alpha = saved_alpha * weight;
+            self.push_xf(m);
+            let b = self.brush(black, Rect::default());
+            unsafe { dc.FillGeometry(&fillet, b, None) };
+            self.pop_xf();
+        }
+        self.alpha = saved_alpha;
+        body
     }
 
     // ---- Layers, clips ----
@@ -764,7 +802,7 @@ impl Gfx {
 
     /// Cached rounded-rect geometry for the island body mask; rebuilt only when the shape changes.
     pub fn body_mask(&mut self, r: Rect, radius: f32) -> Option<ID2D1Geometry> {
-        let key = (r.x, r.w, r.h, radius);
+        let key = (r.x, r.y, r.w, r.h, radius);
         if let Some((geo, k)) = &self.mask_geo {
             if *k == key {
                 return Some(geo.clone());

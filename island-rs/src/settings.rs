@@ -24,12 +24,12 @@ use crate::window::app_opt;
 const WM_MOUSELEAVE: u32 = 0x02A3;
 
 /// Window size in DIP.
-pub const SW_W: f32 = 480.0;
-pub const SW_H: f32 = 500.0;
+pub const SW_W: f32 = 520.0;
+pub const SW_H: f32 = 510.0;
 /// Height of the drag area at the top.
 pub const TITLE_H: f32 = 48.0;
 /// Tabs in the settings window.
-pub const SETTINGS_TAB_COUNT: usize = 4;
+pub const SETTINGS_TAB_COUNT: usize = 5;
 
 // RegisterHotKey modifier bits.
 pub const MOD_ALT: u32 = 0x1;
@@ -220,9 +220,10 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
         }
         WM_LBUTTONUP => {
             let (x, y) = dip(lparam, scale);
-            let _ = ReleaseCapture();
             app.settings_mouse_up(x, y);
+            let _ = ReleaseCapture();
         }
+        WM_CAPTURECHANGED => app.settings_capture_lost(),
         WM_SETCURSOR => {
             if (lparam.0 & 0xFFFF) as u32 == HTCLIENT {
                 let hot = app.settings.as_ref().map(|s| s.hot).unwrap_or(Id::None);

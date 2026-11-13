@@ -14,8 +14,8 @@ use crate::reminder::format_left;
 use crate::sys::radio::Status as RadioStatus;
 use crate::shell::picker::LOUPE;
 
-/// Window size in device independent pixels.
-pub const WIN_W: f32 = 560.0;
+/// Window size in device independent pixels (room on both sides for left/right edge-docked expansion).
+pub const WIN_W: f32 = 760.0;
 pub const WIN_H: f32 = 400.0;
 /// Horizontal centre of the island.
 pub const CX: f32 = WIN_W / 2.0;
@@ -24,16 +24,34 @@ pub const REGION_MARGIN: f32 = 40.0;
 
 
 /// Tab content area of the expanded view.
-const CONTENT_X: f32 = 88.0;
+const CONTENT_X: f32 = CX - 192.0;
 const CONTENT_Y: f32 = 58.0;
 pub const CONTENT_W: f32 = 384.0;
 const CONTENT_H: f32 = 124.0;
 const CONTENT_R: f32 = CONTENT_X + CONTENT_W;
 
 /// Timeline of the media tab (hit area; the track is drawn in its middle).
-pub const MEDIA_BAR: Rect = Rect::new(136.0, 190.0, 288.0, 18.0);
+pub const MEDIA_BAR: Rect = Rect::new(CX - 144.0, 190.0, 288.0, 18.0);
+/// Interactive preview card and fine-tuning sliders in Settings -> Position.
+pub const POS_PREVIEW: Rect = Rect::new(24.0, 130.0, 472.0, 106.0);
+pub const POS_SLIDER_X: Rect = Rect::new(136.0, 322.0, 360.0, 24.0);
+pub const POS_SLIDER_Y: Rect = Rect::new(136.0, 350.0, 360.0, 24.0);
+
+/// Inner monitor rectangle inside `POS_PREVIEW`, scaled to `mon`'s aspect ratio.
+pub fn pos_preview_rect(mon: Option<&crate::window::MonitorInfo>) -> Rect {
+    let aspect = mon
+        .map(|m| {
+            let w = (m.bounds.right - m.bounds.left).max(1) as f32;
+            let h = (m.bounds.bottom - m.bounds.top).max(1) as f32;
+            (w / h).clamp(0.8, 3.2)
+        })
+        .unwrap_or(16.0 / 9.0);
+    let mh = POS_PREVIEW.h - 14.0;
+    let mw = (mh * aspect).clamp(110.0, POS_PREVIEW.w - 32.0);
+    Rect::new(POS_PREVIEW.cx() - mw / 2.0, POS_PREVIEW.cy() - mh / 2.0, mw, mh)
+}
 /// Volume slider in the start tab footer, including the room for the thumb.
-pub const SLIDER: Rect = Rect::new(310.0, 196.0, 134.0, 20.0);
+pub const SLIDER: Rect = Rect::new(CX + 30.0, 196.0, 134.0, 20.0);
 /// Footer row of the start tab.
 const FOOTER_Y: f32 = 192.0;
 /// Orange of the notification bell, as in the compact pill.
@@ -86,12 +104,18 @@ struct Cx<'a> {
     a: &'a mut App,
     /// Widgets only take clicks while their view is the active one.
     hit: bool,
+    x_pad: f32,
+    y_pad: f32,
 }
 
 pub fn draw(g: &mut Gfx, a: &mut App) {
     a.hits.clear();
     let (w, h, r) = a.shape();
-    let x0 = CX - w / 2.0;
+    let x_pad = a.x_pad_for(w);
+    let y_pad = a.y_pad_for(h);
+    let dock = a.dock_edges();
+    let cx_vis = CX + x_pad;
+    let x0 = cx_vis - w / 2.0;
     // Click-through mode shows the island slightly faded.
     let base = if a.click_through { 0.8 } else { 1.0 };
 
@@ -99,20 +123,27 @@ pub fn draw(g: &mut Gfx, a: &mut App) {
 
     g.begin();
     g.alpha = base;
-    g.island_base(x0, w, h, r);
+    let body = g.island_base(x0, y_pad, w, h, r, dock);
+    let clip = Gfx::dock_clip(x0, y_pad, w, h, dock);
 
-    // Content is clipped to the island body; inner glow stays strictly inside the rim.
-    let body = Rect::new(x0, -r, w, h + r);
+    // Content is clipped to the island body and any docked monitor edge; inner glow stays strictly inside the rim.
     let mask = g.body_mask(body, r);
+    if let Some(c) = clip {
+        g.push_clip(c);
+    }
     if let Some(c) = glow {
-        let (cy, ry, strength) = if h < 100.0 { (h * 0.75, h * 1.15, 0.42) } else { (h * 0.65, h * 0.85, 0.26) };
+        let (cy, ry, strength) = if h < 100.0 { (y_pad + h * 0.75, h * 1.15, 0.42) } else { (y_pad + h * 0.65, h * 0.85, 0.26) };
         g.push_mask(mask.as_ref(), 1.0);
-        g.fill_radial_glow(Rect::new(x0, 0.0, w, h), CX, cy, w * 0.60, ry, c.alpha((strength * c.a).min(0.85)));
+        g.fill_radial_glow(Rect::new(x0, y_pad, w, h), cx_vis, cy, w * 0.60, ry, c.alpha((strength * c.a).min(0.85)));
         g.pop_layer();
         g.stroke_rrect(body.inset(0.5), (r - 0.5).max(0.0), argb(0x1AFFFFFF), 1.0, false);
     }
+    if clip.is_some() {
+        g.pop_clip();
+    }
+
     let interactive = !a.click_through;
-    let mut cx = Cx { g, a, hit: false };
+    let mut cx = Cx { g, a, hit: false, x_pad, y_pad };
 
     for v in 0..3usize {
         let k = v as u8;
@@ -131,6 +162,9 @@ pub fn draw(g: &mut Gfx, a: &mut App) {
         };
         cx.hit = current && interactive;
 
+        if let Some(c) = clip {
+            cx.g.push_clip(c);
+        }
         if blur > 0.25 {
             cx.g.begin_offscreen();
             cx.g.alpha = 1.0;
@@ -138,17 +172,24 @@ pub fn draw(g: &mut Gfx, a: &mut App) {
             cx.g.end_offscreen();
 
             cx.g.push_mask(mask.as_ref(), opacity * base);
-            cx.g.push_scale(CX, vh / 2.0, scale, scale);
+            cx.g.push_scale(cx_vis, y_pad + vh / 2.0, scale, scale);
+            cx.g.push_translate(x_pad, y_pad);
             cx.g.draw_offscreen_blurred(blur / 3.0);
+            cx.g.pop_xf();
             cx.g.pop_xf();
             cx.g.pop_layer();
         } else {
             cx.g.push_mask(mask.as_ref(), 1.0);
-            cx.g.push_scale(CX, vh / 2.0, scale, scale);
+            cx.g.push_scale(cx_vis, y_pad + vh / 2.0, scale, scale);
+            cx.g.push_translate(x_pad, y_pad);
             cx.g.alpha = opacity * base;
             cx.view(v);
             cx.g.pop_xf();
+            cx.g.pop_xf();
             cx.g.pop_layer();
+        }
+        if clip.is_some() {
+            cx.g.pop_clip();
         }
     }
     cx.g.alpha = 1.0;
@@ -171,8 +212,10 @@ impl Cx<'_> {
         }
     }
 
-    fn add_hit(&mut self, id: Id, rect: Rect) {
+    fn add_hit(&mut self, id: Id, mut rect: Rect) {
         if self.hit {
+            rect.x += self.x_pad;
+            rect.y += self.y_pad;
             self.a.hits.push(Hit { id, rect });
         }
     }
@@ -432,24 +475,26 @@ impl Cx<'_> {
         let home = self.anim(Key::TabOpacity(0), if self.a.tab == 0 { 1.0 } else { 0.0 });
         let saved = self.g.alpha;
         self.g.alpha = saved * (1.0 - home);
+        let bar_right = CONTENT_R - 70.0;
         if home < 0.996 {
             let clock = self.a.clock_text.clone();
             let date = self.a.date_text.clone();
             let clock_style = ts(20.0).bold();
             let stack_y = 14.0 + (32.0 - line_height(20.0)) / 2.0;
             let clock_w = self.g.measure(&clock, clock_style);
-            self.g.text(&clock, Rect::new(90.0, stack_y, clock_w + 4.0, 30.0), clock_style, WHITE);
+            let clock_x = CONTENT_X + 2.0;
+            self.g.text(&clock, Rect::new(clock_x, stack_y, clock_w + 4.0, 30.0), clock_style, WHITE);
             let date_y = stack_y + line_height(20.0) - 3.0 - line_height(11.5);
             // The date gives way to the tab bar.
-            let date_x = 90.0 + clock_w + 8.0;
-            let bar_left = 402.0 - (TAB_COUNT as f32 * TAB_W + 4.0);
+            let date_x = clock_x + clock_w + 8.0;
+            let bar_left = bar_right - (TAB_COUNT as f32 * TAB_W + 4.0);
             self.g.text(&date, Rect::new(date_x, date_y, (bar_left - 6.0 - date_x).max(0.0), 18.0), ts(11.5).trim(), TEXT2);
         }
         self.g.alpha = saved;
 
-        // Segmented tab bar inside a 30 high container with 2 padding, right edge at 402.
+        // Segmented tab bar inside a 30 high container with 2 padding, right edge at CONTENT_R - 70.
         let bar_w = TAB_COUNT as f32 * TAB_W + 4.0;
-        let bar = Rect::new(402.0 - bar_w, 15.0, bar_w, 30.0);
+        let bar = Rect::new(bar_right - bar_w, 15.0, bar_w, 30.0);
         self.g.fill_rrect(bar, 15.0, Paint::Solid(CARD));
         let highlight_x = self.anim(Key::TabHighlight, self.a.tab as f32 * TAB_W);
         self.g.fill_rrect(Rect::new(bar.x + 2.0 + highlight_x, 17.0, TAB_W, 26.0), 13.0, Paint::Solid(argb(0x26FFFFFF)));
@@ -469,12 +514,12 @@ impl Cx<'_> {
         }
 
         // Settings open in a window of their own.
-        self.icon_button(Id::OpenSettings, Rect::new(408.0, 15.0, 30.0, 30.0), "\u{E713}", 12.0, TEXT2, Some(Paint::Solid(CARD)));
+        self.icon_button(Id::OpenSettings, Rect::new(CONTENT_R - 64.0, 15.0, 30.0, 30.0), "\u{E713}", 12.0, TEXT2, Some(Paint::Solid(CARD)));
 
         let pinned = self.a.pinned;
         self.icon_button(
             Id::Pin,
-            Rect::new(442.0, 15.0, 30.0, 30.0),
+            Rect::new(CONTENT_R - 30.0, 15.0, 30.0, 30.0),
             if pinned { "\u{E840}" } else { "\u{E718}" },
             12.0,
             if pinned { WHITE } else { TEXT2 },
@@ -487,24 +532,24 @@ impl Cx<'_> {
     fn tab_home(&mut self) {
         // Big clock and the long date, top left.
         let clock = self.a.clock_text.clone();
-        self.g.text(&clock, Rect::new(86.0, 4.0, 200.0, 56.0), ts(40.0).bold(), WHITE);
+        self.g.text(&clock, Rect::new(CONTENT_X - 2.0, 4.0, 200.0, 56.0), ts(40.0).bold(), WHITE);
         let date = self.a.date_long.clone();
-        self.g.text(&date, Rect::new(89.0, 58.0, 180.0, 18.0), ts(12.0).trim(), TEXT2);
+        self.g.text(&date, Rect::new(CONTENT_X + 1.0, 58.0, 180.0, 18.0), ts(12.0).trim(), TEXT2);
 
         // Under the tab bar, top right: the weather, or the system line without it.
         if let Some(w) = self.a.weather.clone() {
             let temp = format!("{}°", w.temp);
             let st = ts(17.0).bold();
             let tw = self.g.measure(&temp, st).ceil();
-            self.g.text(&temp, Rect::new(472.0 - tw - 2.0, 48.0, tw + 4.0, 24.0), st, WHITE);
-            self.g.text(weather::glyph(&w.icon), Rect::new(472.0 - tw - 26.0, 52.0, 20.0, 20.0), ts(14.0).icon(), WHITE);
+            self.g.text(&temp, Rect::new(CONTENT_R - tw - 2.0, 48.0, tw + 4.0, 24.0), st, WHITE);
+            self.g.text(weather::glyph(&w.icon), Rect::new(CONTENT_R - tw - 26.0, 52.0, 20.0, 20.0), ts(14.0).icon(), WHITE);
             let line = format!("{} · {}", w.description, w.city);
-            self.g.text(&line, Rect::new(280.0, 72.0, 192.0, 16.0), ts(10.5).right().trim(), argb(0xFF6CB8FF));
+            self.g.text(&line, Rect::new(CX, 72.0, 192.0, 16.0), ts(10.5).right().trim(), argb(0xFF6CB8FF));
         } else {
             let load = format!("CPU {} %  ·  RAM {} %", self.a.tel.cpu, self.a.tel.ram);
-            self.g.text(&load, Rect::new(280.0, 52.0, 192.0, 16.0), ts(11.0).right().trim(), TEXT2);
+            self.g.text(&load, Rect::new(CX, 52.0, 192.0, 16.0), ts(11.0).right().trim(), TEXT2);
             let net = self.a.net_name.clone();
-            self.g.text(&net, Rect::new(280.0, 67.0, 192.0, 16.0), ts(11.0).right().trim(), argb(0xFF6CB8FF));
+            self.g.text(&net, Rect::new(CX, 67.0, 192.0, 16.0), ts(11.0).right().trim(), argb(0xFF6CB8FF));
         }
 
         self.notices_row(Rect::new(CONTENT_X, 88.0, CONTENT_W, 46.0));
@@ -526,10 +571,10 @@ impl Cx<'_> {
 
         // Footer: media keys and battery on the left, volume on the right.
         let y = FOOTER_Y;
-        self.icon_button(Id::Prev, Rect::new(86.0, y, 28.0, 28.0), "\u{E892}", 11.0, WHITE, None);
+        self.icon_button(Id::Prev, Rect::new(CONTENT_X - 2.0, y, 28.0, 28.0), "\u{E892}", 11.0, WHITE, None);
         let play = if self.a.media.playing { "\u{E769}" } else { "\u{E768}" };
-        self.icon_button(Id::Play, Rect::new(116.0, y, 28.0, 28.0), play, 11.0, WHITE, Some(Paint::Grad));
-        self.icon_button(Id::Next, Rect::new(146.0, y, 28.0, 28.0), "\u{E893}", 11.0, WHITE, None);
+        self.icon_button(Id::Play, Rect::new(CONTENT_X + 28.0, y, 28.0, 28.0), play, 11.0, WHITE, Some(Paint::Grad));
+        self.icon_button(Id::Next, Rect::new(CONTENT_X + 58.0, y, 28.0, 28.0), "\u{E893}", 11.0, WHITE, None);
 
         let tel = &self.a.tel;
         let (glyph, text, color) = if tel.has_battery {
@@ -545,11 +590,11 @@ impl Cx<'_> {
         } else {
             ("\u{E945}", "Netzbetrieb".to_string(), TEXT2)
         };
-        self.g.text(glyph, Rect::new(188.0, y + 1.0, 18.0, 28.0), ts(13.0).icon().vcenter(), color);
-        self.g.text(&text, Rect::new(210.0, y, 70.0, 28.0), ts(11.5).bold().vcenter().trim(), color);
+        self.g.text(glyph, Rect::new(CONTENT_X + 100.0, y + 1.0, 18.0, 28.0), ts(13.0).icon().vcenter(), color);
+        self.g.text(&text, Rect::new(CONTENT_X + 122.0, y, 70.0, 28.0), ts(11.5).bold().vcenter().trim(), color);
 
         let muted = self.a.tel.muted;
-        self.icon_button(Id::Mute, Rect::new(278.0, y, 28.0, 28.0), if muted { "\u{E74F}" } else { "\u{E767}" }, 12.0, if muted { TEXT2 } else { WHITE }, None);
+        self.icon_button(Id::Mute, Rect::new(CX - 2.0, y, 28.0, 28.0), if muted { "\u{E74F}" } else { "\u{E767}" }, 12.0, if muted { TEXT2 } else { WHITE }, None);
         let volume = self.a.tel.volume.clamp(0, 100);
         let track = Rect::new(SLIDER.x, SLIDER.cy() - 2.0, SLIDER.w, 4.0);
         let thumb_x = SLIDER.x + 7.0 + (SLIDER.w - 14.0) * volume as f32 / 100.0;
@@ -558,7 +603,7 @@ impl Cx<'_> {
         let thumb = if self.a.hot == Id::Slider { 7.5 } else { 6.5 };
         self.g.fill_ellipse(thumb_x, SLIDER.cy(), thumb, Paint::Solid(WHITE));
         self.add_hit(Id::Slider, SLIDER);
-        self.g.text(&volume.to_string(), Rect::new(446.0, y, 26.0, 28.0), ts(11.5).bold().right().vcenter(), TEXT2);
+        self.g.text(&volume.to_string(), Rect::new(CONTENT_R - 26.0, y, 26.0, 28.0), ts(11.5).bold().right().vcenter(), TEXT2);
     }
 
     /// The two newest notifications as cards; "+N weitere" when there are more.
@@ -741,7 +786,7 @@ impl Cx<'_> {
         }
         self.g.stroke_rrect(swatch.inset(0.5), 21.5, argb(0x24FFFFFF), 1.0, false);
 
-        let x = 192.0;
+        let x = CONTENT_X + 104.0;
         let y0 = CONTENT_Y + (88.0 - 82.3) / 2.0;
 
         // HEX value: plain text button.
@@ -941,7 +986,7 @@ impl Cx<'_> {
             }
         }
 
-        let x = 224.0;
+        let x = CONTENT_X + 136.0;
         let y0 = CONTENT_Y + (CONTENT_H - 93.6) / 2.0;
         self.g.text("Mit dem Handy teilen", Rect::new(x, y0, CONTENT_R - x, 24.0), ts(15.0).bold(), WHITE);
         self.g.text("QR-Code scannen · gleiches WLAN", Rect::new(x, y0 + 21.0, CONTENT_R - x, 18.0), ts(11.0), TEXT2);
@@ -1052,13 +1097,13 @@ impl Cx<'_> {
         let nearby = self.a.nearby_visible;
 
         let y = CONTENT_Y;
-        self.toggle_tile(Id::Toggle(0), Rect::new(88.0, y, 124.0, 64.0), "\u{E701}", "WLAN", &wifi_text, wifi_on);
-        self.toggle_tile(Id::Toggle(1), Rect::new(218.0, y, 124.0, 64.0), "\u{E702}", "Bluetooth", &bt_text, bt_on);
-        self.toggle_tile(Id::Toggle(2), Rect::new(348.0, y, 124.0, 64.0), "\u{E72D}", "Nearby", if nearby { "Sichtbar" } else { "Unsichtbar" }, nearby);
+        self.toggle_tile(Id::Toggle(0), Rect::new(CONTENT_X, y, 124.0, 64.0), "\u{E701}", "WLAN", &wifi_text, wifi_on);
+        self.toggle_tile(Id::Toggle(1), Rect::new(CONTENT_X + 130.0, y, 124.0, 64.0), "\u{E702}", "Bluetooth", &bt_text, bt_on);
+        self.toggle_tile(Id::Toggle(2), Rect::new(CONTENT_X + 260.0, y, 124.0, 64.0), "\u{E72D}", "Nearby", if nearby { "Sichtbar" } else { "Unsichtbar" }, nearby);
 
         // Network card: name, address, signal bars.
         let card_y = y + 72.0;
-        let left = Rect::new(88.0, card_y, 189.0, 52.0);
+        let left = Rect::new(CONTENT_X, card_y, 189.0, 52.0);
         self.g.fill_rrect(left, 16.0, Paint::Solid(CARD));
         let label = if self.a.local_ip.is_empty() { "Netzwerk".to_string() } else { format!("Netzwerk · {}", self.a.local_ip) };
         self.g.text(&label, Rect::new(left.x + 13.0, left.y + 8.0, left.w - 26.0, 16.0), ts(10.5).trim(), TEXT2);
@@ -1079,7 +1124,7 @@ impl Cx<'_> {
         }
 
         // Bluetooth card: connected devices.
-        let right = Rect::new(283.0, card_y, 189.0, 52.0);
+        let right = Rect::new(CONTENT_X + 195.0, card_y, 189.0, 52.0);
         self.g.fill_rrect(right, 16.0, Paint::Solid(CARD));
         self.g.text("Bluetooth-Geräte", Rect::new(right.x + 13.0, right.y + 8.0, right.w - 26.0, 16.0), ts(10.5).trim(), TEXT2);
         let devices = if bt_names.is_empty() { "Keine verbunden".to_string() } else { bt_names.join(", ") };
@@ -1090,14 +1135,14 @@ impl Cx<'_> {
 
     fn tab_focus(&mut self) {
         // Progress ring: arc from 12 o'clock, clockwise, for the remaining share.
-        let (ring_cx, ring_cy, radius) = (146.0, 120.0, 48.0);
+        let (ring_cx, ring_cy, radius) = (CONTENT_X + 58.0, 120.0, 48.0);
         self.g.stroke_ellipse(ring_cx, ring_cy, radius, TRACK, 6.0);
         let fraction = if self.a.focus_total > 0 { self.a.focus_remaining as f32 / self.a.focus_total as f32 } else { 0.0 };
         self.g.stroke_arc(ring_cx, ring_cy, radius, fraction, 6.0, Paint::Grad);
         let time = format_seconds(self.a.focus_remaining);
-        self.g.text(&time, Rect::new(92.0, 66.0, 108.0, 108.0), ts(22.0).bold().center().vcenter(), WHITE);
+        self.g.text(&time, Rect::new(CONTENT_X + 4.0, 66.0, 108.0, 108.0), ts(22.0).bold().center().vcenter(), WHITE);
 
-        let x = 224.0;
+        let x = CONTENT_X + 136.0;
         let y0 = CONTENT_Y + (CONTENT_H - 107.6) / 2.0;
         let (running, remaining, total) = (self.a.focus_running, self.a.focus_remaining, self.a.focus_total);
         let status = if running {
@@ -1153,8 +1198,9 @@ impl Cx<'_> {
         let highlight = self.anim(Key::SettingsTabHighlight, self.a.settings_tab as f32).clamp(0.0, (SETTINGS_TAB_COUNT - 1) as f32);
         self.g.fill_rrect(Rect::new(bar.x + 3.0 + highlight * tab_w, bar.y + 3.0, tab_w, 30.0), 15.0, Paint::Grad);
         const SETTINGS_TABS: [(&str, &str); SETTINGS_TAB_COUNT] = [
-            ("\u{E790}", "Darstellung"),
+            ("\u{E790}", "Aussehen"),
             ("\u{E713}", "Verhalten"),
+            ("\u{E7F4}", "Position"),
             ("\u{E753}", "Wetter"),
             ("\u{E765}", "Kürzel"),
         ];
@@ -1191,7 +1237,8 @@ impl Cx<'_> {
             match i {
                 0 => self.settings_tab_appearance(),
                 1 => self.settings_tab_behavior(),
-                2 => self.settings_tab_weather(),
+                2 => self.settings_tab_position(),
+                3 => self.settings_tab_weather(),
                 _ => self.settings_tab_shortcuts(),
             }
             self.g.pop_xf();
@@ -1200,10 +1247,10 @@ impl Cx<'_> {
         self.hit = true;
 
         // Persistent footer actions.
-        self.g.fill_rect(Rect::new(0.0, 444.0, SW_W, 1.0), Paint::Solid(argb(0x14FFFFFF)));
-        let clear = self.label_button(Id::ClearNotices, X, 458.0, 28.0, 14.0, 0.0, "Meldungen leeren", ts(11.0), CHIP_TEXT, Paint::Solid(CARD), Some("\u{E74D}"), false);
-        self.label_button(Id::ResetSettings, clear.right() + 8.0, 458.0, 28.0, 14.0, 0.0, "Standard", ts(11.0), CHIP_TEXT, Paint::Solid(CARD), Some("\u{E72C}"), false);
-        self.g.text("Dynamic Island", Rect::new(X, 458.0, W, 28.0), ts(10.5).right().vcenter(), TEXT3);
+        self.g.fill_rect(Rect::new(0.0, 454.0, SW_W, 1.0), Paint::Solid(argb(0x14FFFFFF)));
+        let clear = self.label_button(Id::ClearNotices, X, 468.0, 28.0, 14.0, 0.0, "Meldungen leeren", ts(11.0), CHIP_TEXT, Paint::Solid(CARD), Some("\u{E74D}"), false);
+        self.label_button(Id::ResetSettings, clear.right() + 8.0, 468.0, 28.0, 14.0, 0.0, "Standard", ts(11.0), CHIP_TEXT, Paint::Solid(CARD), Some("\u{E72C}"), false);
+        self.g.text("Dynamic Island", Rect::new(X, 468.0, W, 28.0), ts(10.5).right().vcenter(), TEXT3);
     }
 
     fn settings_tab_appearance(&mut self) {
@@ -1258,11 +1305,141 @@ impl Cx<'_> {
         self.segmented(1, Rect::new(X + half + 8.0, 148.0, half, 30.0), ["Kurz", "Normal", "Lang"]);
 
         self.section_at("BEDIENUNG & MELDUNGEN", X, 198.0);
-        for (row, idx) in [0usize, 1, 2].into_iter().enumerate() {
+        for (row, idx) in [0usize, 1, 2, crate::island::SWITCH_AUTOHIDE as usize].into_iter().enumerate() {
             let (label, desc) = crate::island::SWITCHES[idx];
             let r = Rect::new(X, 216.0 + row as f32 * 48.0, W, 40.0);
             self.switch_card(idx as u8, r, label, desc);
         }
+        // Auto-hide delay, dimmed while auto-hide is off.
+        self.g.text("Verstecken nach", Rect::new(X + 2.0, 416.0, half, 30.0), ts(11.0).vcenter(), if self.a.opt_autohide { TEXT2 } else { TEXT3 });
+        self.segmented(4, Rect::new(X + half + 8.0, 416.0, half, 30.0), ["0,3 s", "1 s", "3 s"]);
+    }
+
+    fn settings_tab_position(&mut self) {
+        const X: f32 = 24.0;
+        const W: f32 = SW_W - 48.0;
+        let half = (W - 8.0) / 2.0;
+        let mon = self.a.active_monitor();
+        let (dl, dt, dr, db) = self.a.dock_edges();
+        let docked_any = dl > 0.5 || dt > 0.5 || dr > 0.5 || db > 0.5;
+
+        // Interactive screen preview.
+        self.section_at("BILDSCHIRM-VORSCHAU", X, 112.0);
+        let status = if let Some(m) = mon {
+            let mw = m.bounds.right - m.bounds.left;
+            let mh = m.bounds.bottom - m.bounds.top;
+            let mode = if docked_any { "Angedockt" } else { "Schwebend" };
+            format!("{mw} × {mh} · {mode}")
+        } else {
+            "Standard".to_string()
+        };
+        self.g.text(&status, Rect::new(X + W - 210.0, 112.0, 210.0, 16.0), ts(10.5).right(), TEXT2);
+
+        self.g.fill_rrect(POS_PREVIEW, 14.0, Paint::Solid(CARD));
+        let scr = pos_preview_rect(mon.as_ref());
+        self.g.fill_rrect(scr, 6.0, Paint::Solid(argb(0xFF0B0B0E)));
+        self.g.stroke_rrect(scr.inset(0.5), 5.5, argb(0x28FFFFFF), 1.0, false);
+        // Taskbar + subtle alignment crosshairs inside preview screen.
+        self.g.fill_rect(Rect::new(scr.cx() - 0.5, scr.y + 4.0, 1.0, scr.h - 12.0), Paint::Solid(argb(0x10FFFFFF)));
+        self.g.fill_rect(Rect::new(scr.x + 4.0, scr.cy() - 0.5, scr.w - 8.0, 1.0), Paint::Solid(argb(0x10FFFFFF)));
+        self.g.fill_rect(Rect::new(scr.x + 2.0, scr.bottom() - 6.0, scr.w - 4.0, 4.0), Paint::Solid(argb(0x18FFFFFF)));
+
+        let pw = (scr.w * 0.24).clamp(24.0, 42.0);
+        let ph = 7.0;
+        let px = scr.x + (scr.w - pw) * self.a.pos_x;
+        let py = scr.y + (scr.h - 6.0 - ph) * self.a.pos_y;
+        let pill = Rect::new(px, py, pw, ph);
+        self.g.fill_rrect(pill, ph / 2.0, Paint::Solid(argb(0xFF000000)));
+        self.g.stroke_rrect(pill, ph / 2.0, accent(), 1.5, false);
+        self.add_hit(Id::PosPreview, POS_PREVIEW);
+
+        // Quick horizontal and vertical presets.
+        self.section_at("SCHNELLWAHL", X, 246.0);
+        let x_active = if self.a.pos_x <= 0.02 {
+            Some(0u8)
+        } else if (self.a.pos_x - 0.5).abs() < 0.06 {
+            Some(1)
+        } else if self.a.pos_x >= 0.98 {
+            Some(2)
+        } else {
+            None
+        };
+        let y_active = if self.a.pos_y <= 0.02 {
+            Some(0u8)
+        } else if (self.a.pos_y - 0.5).abs() < 0.06 {
+            Some(1)
+        } else if self.a.pos_y >= 0.98 {
+            Some(2)
+        } else {
+            None
+        };
+        self.pos_preset_bar(Rect::new(X, 264.0, half, 30.0), [Id::PosX(0), Id::PosX(1), Id::PosX(2)], ["Links", "Mitte", "Rechts"], x_active);
+        self.pos_preset_bar(Rect::new(X + half + 8.0, 264.0, half, 30.0), [Id::PosY(0), Id::PosY(1), Id::PosY(2)], ["Oben", "Mitte", "Unten"], y_active);
+
+        // Fine adjustment sliders.
+        self.section_at("FEINABSTIMMUNG", X, 304.0);
+        let x_text = if dl > 0.5 { "Links".to_string() } else if dr > 0.5 { "Rechts".to_string() } else { format!("{}%", (self.a.pos_x * 100.0).round() as i32) };
+        let y_text = if dt > 0.5 { "Oben".to_string() } else if db > 0.5 { "Unten".to_string() } else { format!("{}%", (self.a.pos_y * 100.0).round() as i32) };
+        let readout = format!("X {x_text} · Y {y_text}");
+        self.g.text(&readout, Rect::new(X + W - 160.0, 304.0, 160.0, 16.0), ts(10.5).right(), TEXT2);
+        self.pos_slider(Id::PosSliderX, X, "X-Position", POS_SLIDER_X, self.a.pos_x);
+        self.pos_slider(Id::PosSliderY, X, "Y-Abstand", POS_SLIDER_Y, self.a.pos_y);
+
+        // Monitor selection & reset.
+        self.section_at("BILDSCHIRM & RESET", X, 384.0);
+        let reset_w = 128.0;
+        let reset = Rect::new(X + W - reset_w, 402.0, reset_w, 30.0);
+        self.label_button(Id::PosReset, reset.x, reset.y, reset.h, 15.0, reset.w, "Zentrieren", ts(11.5).bold(), WHITE, Paint::Solid(CARD), Some("\u{E72C}"), false);
+
+        let mon_area_w = reset.x - X - 8.0;
+        let count = self.a.monitors.len().clamp(1, 3);
+        let gap = 6.0;
+        let chip_w = ((mon_area_w - gap * (count as f32 - 1.0)) / count as f32).min(112.0);
+        for i in 0..count {
+            let r = Rect::new(X + i as f32 * (chip_w + gap), 402.0, chip_w, 30.0);
+            let id = Id::PosMonitor(i as u8);
+            let selected = self.a.pos_monitor == i;
+            let bg = if selected { Paint::Grad } else { Paint::Solid(CARD) };
+            let fg = if selected { WHITE } else { TEXT2 };
+            let label = format!("Monitor {}", i + 1);
+            self.label_button(id, r.x, r.y, r.h, 15.0, r.w, &label, ts(11.5).bold(), fg, bg, None, false);
+        }
+
+        self.g.text("Tipp: Alt + Linksklick auf die Island zum direkten Verschieben", Rect::new(X + 2.0, 436.0, W - 4.0, 16.0), ts(10.5).trim(), TEXT3);
+    }
+
+    fn pos_preset_bar(&mut self, r: Rect, ids: [Id; 3], labels: [&str; 3], active: Option<u8>) {
+        self.g.fill_rrect(r, 15.0, Paint::Solid(CARD));
+        let seg_w = (r.w - 4.0) / 3.0;
+        for (i, (&id, label)) in ids.iter().zip(labels.iter()).enumerate() {
+            let seg = Rect::new(r.x + 2.0 + i as f32 * seg_w, r.y + 2.0, seg_w, r.h - 4.0);
+            let selected = active == Some(i as u8);
+            if selected {
+                self.g.fill_rrect(seg, 13.0, Paint::Grad);
+            } else {
+                let hover = self.anim(Key::Hover(id), 0.0);
+                if hover > 0.0 {
+                    self.g.fill_rrect(seg, 13.0, Paint::Solid(HOVER.fade(hover)));
+                }
+            }
+            let fg = if selected { WHITE } else { TEXT2 };
+            self.g.text(label, seg, ts(11.5).bold().center().vcenter(), fg);
+            self.add_hit(id, seg);
+        }
+    }
+
+    fn pos_slider(&mut self, id: Id, label_x: f32, label: &str, r: Rect, val: f32) {
+        let v = val.clamp(0.0, 1.0);
+        self.g.text(label, Rect::new(label_x + 2.0, r.y, r.x - label_x - 8.0, r.h), ts(11.5).vcenter(), TEXT2);
+        let track = Rect::new(r.x, r.cy() - 2.0, r.w, 4.0);
+        self.g.fill_rrect(track, 2.0, Paint::Solid(CARD));
+        let fill_w = (track.w * v).max(4.0);
+        self.g.fill_rrect(Rect::new(track.x, track.y, fill_w, track.h), 2.0, Paint::Grad);
+        let hover = self.anim(Key::Hover(id), 0.0);
+        let knob_r = 6.0 + hover * 1.5;
+        let knob_x = (track.x + track.w * v).clamp(track.x + 6.0, track.right() - 6.0);
+        self.g.fill_ellipse(knob_x, track.cy(), knob_r, Paint::Solid(WHITE));
+        self.add_hit(id, r);
     }
 
     fn settings_tab_weather(&mut self) {
@@ -1516,7 +1693,7 @@ pub fn draw_settings(g: &mut Gfx, a: &mut App) {
     let full = Rect::new(0.0, 0.0, SW_W, SW_H);
     g.fill_rrect(full, 14.0, Paint::Solid(argb(0xFF141416)));
     g.stroke_rrect(full.inset(0.5), 13.5, argb(0x33FFFFFF), 1.0, false);
-    let mut cx = Cx { g, a, hit: true };
+    let mut cx = Cx { g, a, hit: true, x_pad: 0.0, y_pad: 0.0 };
     cx.settings_page();
     cx.g.alpha = 1.0;
 }

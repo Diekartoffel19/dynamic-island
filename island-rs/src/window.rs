@@ -5,10 +5,12 @@
 
 use std::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 
-use windows::core::w;
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, SYSTEMTIME, WPARAM};
+use windows::core::{w, BOOL};
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, SYSTEMTIME, WPARAM};
 use windows::Win32::Globalization::GetDateFormatEx;
-use windows::Win32::Graphics::Gdi::ValidateRect;
+use windows::Win32::Graphics::Gdi::{
+    EnumDisplayMonitors, GetMonitorInfoW, MonitorFromWindow, ValidateRect, HDC, HMONITOR, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Accessibility::{SetWinEventHook, HWINEVENTHOOK};
 use windows::Win32::UI::HiDpi::GetDpiForSystem;
@@ -31,6 +33,56 @@ const WINEVENT_OUTOFCONTEXT: u32 = 0;
 
 static APP: AtomicPtr<App> = AtomicPtr::new(std::ptr::null_mut());
 static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
+
+#[derive(Clone, Copy, Debug)]
+pub struct MonitorInfo {
+    pub bounds: RECT,
+    pub work: RECT,
+    pub primary: bool,
+}
+
+unsafe extern "system" fn enum_monitor_cb(hmon: HMONITOR, _hdc: HDC, _rect: *mut RECT, data: LPARAM) -> BOOL {
+    let list = &mut *(data.0 as *mut Vec<MonitorInfo>);
+    let mut info = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
+    if GetMonitorInfoW(hmon, &mut info).as_bool() {
+        list.push(MonitorInfo {
+            bounds: info.rcMonitor,
+            work: info.rcWork,
+            primary: (info.dwFlags & 1) != 0,
+        });
+    }
+    BOOL(1)
+}
+
+/// All active monitors, sorted left-to-right then top-to-bottom.
+pub fn monitors() -> Vec<MonitorInfo> {
+    let mut list: Vec<MonitorInfo> = Vec::new();
+    unsafe {
+        let _ = EnumDisplayMonitors(None, None, Some(enum_monitor_cb), LPARAM(&mut list as *mut _ as isize));
+    }
+    list.sort_by_key(|m| (m.bounds.left, m.bounds.top));
+    if list.is_empty() {
+        let w = unsafe { GetSystemMetrics(SM_CXSCREEN) };
+        let h = unsafe { GetSystemMetrics(SM_CYSCREEN) };
+        let r = RECT { left: 0, top: 0, right: w, bottom: h };
+        list.push(MonitorInfo { bounds: r, work: r, primary: true });
+    }
+    list
+}
+
+/// Index in `list` matching `hwnd`'s monitor.
+pub fn monitor_index_for_hwnd(hwnd: HWND, list: &[MonitorInfo]) -> usize {
+    unsafe {
+        let hmon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        let mut info = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
+        if GetMonitorInfoW(hmon, &mut info).as_bool() {
+            if let Some(i) = list.iter().position(|m| m.bounds.left == info.rcMonitor.left && m.bounds.top == info.rcMonitor.top) {
+                return i;
+            }
+        }
+    }
+    list.iter().position(|m| m.primary).unwrap_or(0)
+}
 
 /// The one App. Only touch it on the window thread.
 pub fn app() -> &'static mut App {
@@ -110,6 +162,7 @@ pub fn run() {
         let rx = event::init(hwnd);
         let app = Box::leak(Box::new(App::new(hwnd, scale, rx)));
         APP.store(app, Ordering::Relaxed);
+        app.apply_position();
 
         // First frame before the window shows, so it never flashes empty.
         app.frame();
@@ -221,11 +274,15 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             return LRESULT(1);
         }
         WM_CLIPBOARDUPDATE => app.on_clipboard_update(),
+        WM_ENTERSIZEMOVE => app.on_enter_move(),
+        WM_MOVE => app.on_window_moving(),
+        WM_EXITSIZEMOVE => app.on_window_moved(),
         WM_DPICHANGED | WM_DISPLAYCHANGE => {
             let scale = GetDpiForSystem() as f32 / 96.0;
             let _ = SetWindowPos(hwnd, None, 0, 0, (WIN_W * scale).round() as i32, (WIN_H * scale).round() as i32, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
             app.reset_graphics(scale);
-            app.center_on_screen();
+            app.refresh_monitors();
+            app.apply_position();
         }
         WM_PAINT => {
             let _ = ValidateRect(Some(hwnd), None);

@@ -16,10 +16,10 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     TME_LEAVE, TRACKMOUSEEVENT, VK_LBUTTON, VK_MEDIA_NEXT_TRACK, VK_MEDIA_PLAY_PAUSE, VK_MEDIA_PREV_TRACK, VK_MENU,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    DestroyWindow, GetCursorPos, GetSystemMetrics, GetWindowLongPtrW, KillTimer, PostMessageW, SendMessageW, SetLayeredWindowAttributes,
-    SetTimer, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE, HTCAPTION, HWND_TOPMOST, LWA_ALPHA, SM_CXSCREEN, SWP_NOACTIVATE,
-    SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_NCLBUTTONDOWN, WM_RBUTTONDOWN, WM_RBUTTONUP,
-    WS_EX_LAYERED, WS_EX_TRANSPARENT,
+    DestroyWindow, GetCursorPos, GetWindowLongPtrW, GetWindowRect, KillTimer, PostMessageW, SendMessageW,
+    SetLayeredWindowAttributes, SetTimer, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE, HTCAPTION, HWND_TOPMOST, LWA_ALPHA,
+    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_NCLBUTTONDOWN, WM_RBUTTONDOWN,
+    WM_RBUTTONUP, WS_EX_LAYERED, WS_EX_TRANSPARENT,
 };
 
 use crate::event::{EventType, IslandEvent, Msg};
@@ -83,6 +83,19 @@ pub const T_REMINDER: usize = 14;
 pub const T_CARET: usize = 15;
 pub const T_MEDIA: usize = 16;
 pub const T_WEATHER: usize = 17;
+pub const T_EDGE: usize = 18;
+/// Poll interval of the auto-hide cursor check.
+const EDGE_TICK_MS: u32 = 60;
+/// Time the cursor must be away before the island hides itself, per setting.
+pub const AUTOHIDE_DELAYS: [u32; 3] = [300, 1000, 3000];
+/// Length of the shrink animation before the window is hidden.
+const AUTOHIDE_SHRINK_MS: u32 = 220;
+/// Depth of the screen-edge strip that brings the island back, in pixels.
+const EDGE_DEPTH: i32 = 3;
+/// Extra reach of that strip beyond the island, in DIP.
+const EDGE_MARGIN: f32 = 70.0;
+/// Shape the island shrinks to (and grows from) when hiding itself.
+const AUTOHIDE_SHAPE: (f64, f64, f64) = (COMPACT.0 * 0.5, 2.0, 1.0);
 
 pub const TAB_MEDIA: usize = 1;
 pub const TAB_COLOR: usize = 2;
@@ -171,10 +184,22 @@ pub enum Id {
     MediaNext,
     /// Timeline of the media tab: a click jumps there.
     MediaSeek,
+    /// Interactive monitor preview in Position settings.
+    PosPreview,
+    PosSliderX,
+    PosSliderY,
+    /// Horizontal position preset: 0 = Links, 1 = Mitte, 2 = Rechts.
+    PosX(u8),
+    /// Vertical position preset: 0 = Oben, 1 = Schwebend, 2 = Unten.
+    PosY(u8),
+    /// Monitor selection chip in Position settings.
+    PosMonitor(u8),
+    /// Reset position to top-center on primary monitor.
+    PosReset,
 }
 
 /// Switches of the settings window: label, description.
-pub const SWITCHES: [(&str, &str); 8] = [
+pub const SWITCHES: [(&str, &str); 9] = [
     ("Hover öffnet", "Sonst per Klick öffnen"),
     ("Lautstärke-Pille", "Bei Lautstärke-Änderung"),
     ("Kopier-Meldung", "Toast beim Kopieren"),
@@ -183,11 +208,14 @@ pub const SWITCHES: [(&str, &str); 8] = [
     ("Wetter im Pill", "Temperatur neben der Uhr"),
     ("Per Tastenkürzel ausblenden", "Island verstecken und wieder zeigen"),
     ("Innen-Leuchten", "Farbschein nur innerhalb der Island"),
+    ("Automatisch verstecken", "Erst zeigen, wenn die Maus am Bildschirmrand ist"),
 ];
 /// Switch index of the hide shortcut.
 pub const SWITCH_HOTKEY: u8 = 6;
 /// Switch index of the inner glow.
 pub const SWITCH_GLOW: u8 = 7;
+/// Switch index of auto-hide.
+pub const SWITCH_AUTOHIDE: u8 = 8;
 /// Default shortcut: Ctrl + Alt + I.
 const HOTKEY_DEFAULT: (u32, u32) = (settings::MOD_CONTROL | settings::MOD_ALT, 0x49);
 
@@ -379,6 +407,8 @@ pub struct App {
     pub opt_glow: bool,
     /// 0 = Bei Musik, 1 = Nur Medien, 2 = Immer.
     pub glow_mode: u8,
+    /// Index into AUTOHIDE_DELAYS.
+    pub autohide_delay: u8,
     /// 0 = Dezent, 1 = Normal, 2 = Kräftig.
     pub glow_strength: u8,
     pub settings_tab: usize,
@@ -391,7 +421,28 @@ pub struct App {
     pub hotkey_problem: Option<String>,
     /// The island is hidden (shortcut or tray).
     pub hidden: bool,
+    /// Auto-hide: the island stays off screen until the cursor touches the screen edge.
+    pub opt_autohide: bool,
+    /// The window is currently hidden by auto-hide.
+    auto_hidden: bool,
+    /// The island is shrinking away; the window hides when that is done.
+    auto_hiding: bool,
+    /// How long the cursor has been away from the island and the edge.
+    away_ms: u32,
     pub settings: Option<SettingsWindow>,
+    /// Active drag target in the settings window (position preview or sliders).
+    settings_drag: Option<Id>,
+
+    // Screen position
+    pub monitors: Vec<window::MonitorInfo>,
+    pub pos_monitor: usize,
+    /// Normalized horizontal position [0.0..1.0], 0.5 = centered.
+    pub pos_x: f32,
+    /// Normalized vertical position [0.0..1.0], <= 0.005 = docked top notch.
+    pub pos_y: f32,
+    pos_anchor_bottom: bool,
+    moving_programmatic: bool,
+    user_moving: bool,
 
     // Weather
     pub weather: Option<Weather>,
@@ -604,6 +655,7 @@ impl App {
             opt_hotkey: false,
             opt_glow: true,
             glow_mode: 0,
+            autohide_delay: 1,
             glow_strength: 1,
             settings_tab: 0,
             hotkey_mods: HOTKEY_DEFAULT.0,
@@ -611,7 +663,29 @@ impl App {
             hotkey_recording: false,
             hotkey_problem: None,
             hidden: false,
+            opt_autohide: false,
+            auto_hidden: false,
+            auto_hiding: false,
+            away_ms: 0,
             settings: None,
+            settings_drag: None,
+            monitors: {
+                let list = window::monitors();
+                list
+            },
+            pos_monitor: {
+                let list = window::monitors();
+                let default_mon = list.iter().position(|m| m.primary).unwrap_or(0);
+                state::load_setting("pos_monitor")
+                    .and_then(|v| v.parse::<usize>().ok())
+                    .filter(|&i| i < list.len())
+                    .unwrap_or(default_mon)
+            },
+            pos_x: state::load_setting("pos_x").and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.5).clamp(0.0, 1.0),
+            pos_y: state::load_setting("pos_y").and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.0).clamp(0.0, 1.0),
+            pos_anchor_bottom: state::load_setting("pos_y").and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.0) >= 0.75,
+            moving_programmatic: false,
+            user_moving: false,
             weather: None,
             weather_error: None,
             weather_loading: false,
@@ -899,6 +973,7 @@ impl App {
             }
             T_MEDIA => self.dirty = true,
             T_WEATHER => self.refresh_weather(),
+            T_EDGE => self.on_edge_tick(),
             T_TRIM => {
                 self.kill_timer(T_TRIM);
                 if !self.wants_frame() {
@@ -975,9 +1050,42 @@ impl App {
         (w as f32, h as f32, r as f32)
     }
 
+    pub fn x_pad_for(&self, w: f32) -> f32 {
+        (0.5 - self.pos_x) * (w - COMPACT.0 as f32).max(0.0)
+    }
+
+    pub fn x_pad(&self) -> f32 {
+        self.x_pad_for(self.shape().0)
+    }
+
+    pub fn y_pad_for(&self, h: f32) -> f32 {
+        if self.pos_anchor_bottom {
+            (WIN_H - 24.0 - h).max(16.0)
+        } else {
+            16.0
+        }
+    }
+
+    /// Smooth `[0.0..1.0]` edge-dock weights `(left, top, right, bottom)` within 18 DIP of each monitor edge.
+    pub fn dock_edges(&self) -> (f32, f32, f32, f32) {
+        let Some(mon) = self.active_monitor() else {
+            return (0.0, if self.pos_y <= 0.005 { 1.0 } else { 0.0 }, 0.0, 0.0);
+        };
+        let (x_min, x_max, y_min, y_max) = self.pos_bounds(&mon);
+        let s = self.scale.max(0.5);
+        let span_x = (x_max - x_min).max(1) as f32 / s;
+        let span_y = (y_max - y_min).max(1) as f32 / s;
+        const ZONE: f32 = 18.0;
+        let dl = (1.0 - (self.pos_x * span_x) / ZONE).clamp(0.0, 1.0);
+        let dr = (1.0 - ((1.0 - self.pos_x) * span_x) / ZONE).clamp(0.0, 1.0);
+        let dt = (1.0 - (self.pos_y * span_y) / ZONE).clamp(0.0, 1.0);
+        let db = (1.0 - ((1.0 - self.pos_y) * span_y) / ZONE).clamp(0.0, 1.0);
+        (dl, dt, dr, db)
+    }
+
     pub fn island_rect(&self) -> Rect {
         let (w, h, _) = self.shape();
-        Rect::new(CX - w / 2.0, 0.0, w, h)
+        Rect::new(CX - w / 2.0 + self.x_pad_for(w), self.y_pad_for(h), w, h)
     }
 
     fn expanded_shape(&self) -> (f64, f64, f64) {
@@ -1087,13 +1195,20 @@ impl App {
     /// The window only takes mouse input on the island itself.
     fn update_region(&mut self) {
         let (w, h, _) = self.shape();
+        let x0 = CX - w / 2.0 + self.x_pad_for(w);
+        let y0 = self.y_pad_for(h);
+        let (dl, dt, dr, db) = self.dock_edges();
         let s = self.scale;
         let m = scene::REGION_MARGIN;
+        let ml = if dl > 0.5 { 0.0 } else { m + 8.0 };
+        let mr = if dr > 0.5 { 0.0 } else { m + 8.0 };
+        let mt = if dt > 0.5 { 0.0 } else { m };
+        let mb = if db > 0.5 { 0.0 } else { m };
         let region = (
-            ((CX - w / 2.0 - 8.0 - m) * s).floor() as i32,
-            0,
-            ((CX + w / 2.0 + 8.0 + m) * s).ceil() as i32,
-            ((h + m) * s).ceil() as i32,
+            ((x0 - ml).max(0.0) * s).floor() as i32,
+            ((y0 - mt).max(0.0) * s).floor() as i32,
+            ((x0 + w + mr).min(WIN_W) * s).ceil() as i32,
+            ((y0 + h + mb).min(WIN_H) * s).ceil() as i32,
         );
         if region != self.region {
             self.region = region;
@@ -1233,16 +1348,140 @@ impl App {
         }
     }
 
-    pub fn center_on_screen(&mut self) {
-        unsafe {
-            let screen = GetSystemMetrics(SM_CXSCREEN);
-            let width = (WIN_W * self.scale).round() as i32;
-            let _ = SetWindowPos(self.hwnd, None, (screen - width) / 2, 0, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+    pub fn active_monitor(&self) -> Option<window::MonitorInfo> {
+        self.monitors.get(self.pos_monitor).copied().or_else(|| self.monitors.first().copied())
+    }
+
+    pub fn refresh_monitors(&mut self) {
+        self.monitors = window::monitors();
+        if self.pos_monitor >= self.monitors.len() {
+            self.pos_monitor = self.monitors.iter().position(|m| m.primary).unwrap_or(0);
         }
     }
 
+    fn pos_bounds(&self, mon: &window::MonitorInfo) -> (i32, i32, i32, i32) {
+        let s = self.scale;
+        let x_min = mon.bounds.left - ((CX - COMPACT.0 as f32 / 2.0) * s).round() as i32;
+        let x_max = (mon.bounds.right - ((CX + COMPACT.0 as f32 / 2.0) * s).round() as i32).max(x_min);
+        let y_min = mon.bounds.top;
+        let y_max = (mon.work.bottom - (COMPACT.1 as f32 * s).round() as i32).max(y_min);
+        (x_min, x_max, y_min, y_max)
+    }
+
+    pub fn apply_position(&mut self) {
+        if self.monitors.is_empty() {
+            self.monitors = window::monitors();
+        }
+        if self.pos_monitor >= self.monitors.len() {
+            self.pos_monitor = self.monitors.iter().position(|m| m.primary).unwrap_or(0);
+        }
+        let mon = self.monitors[self.pos_monitor];
+        let (x_min, x_max, y_min, y_max) = self.pos_bounds(&mon);
+        self.pos_anchor_bottom = self.pos_y >= 0.75;
+        let wx = x_min + ((x_max - x_min) as f32 * self.pos_x.clamp(0.0, 1.0)).round() as i32;
+        let visual_top = y_min + ((y_max - y_min) as f32 * self.pos_y.clamp(0.0, 1.0)).round() as i32;
+        let wy = visual_top - (self.y_pad_for(COMPACT.1 as f32) * self.scale).round() as i32;
+        self.moving_programmatic = true;
+        unsafe {
+            let _ = SetWindowPos(self.hwnd, None, wx, wy, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+        self.moving_programmatic = false;
+        self.update_region();
+        self.dirty = true;
+    }
+
+    pub fn save_position(&self) {
+        state::save_setting("pos_monitor", &self.pos_monitor.to_string());
+        state::save_setting("pos_x", &format!("{:.4}", self.pos_x));
+        state::save_setting("pos_y", &format!("{:.4}", self.pos_y));
+    }
+
+    pub fn set_position(&mut self, monitor: usize, x: f32, y: f32, save: bool) {
+        if self.monitors.is_empty() {
+            self.refresh_monitors();
+        }
+        self.pos_monitor = monitor.min(self.monitors.len().saturating_sub(1));
+        self.pos_x = x.clamp(0.0, 1.0);
+        self.pos_y = y.clamp(0.0, 1.0);
+        self.apply_position();
+        if save {
+            self.save_position();
+        }
+    }
+
+    pub fn on_enter_move(&mut self) {
+        self.user_moving = true;
+        self.refresh_monitors();
+    }
+
+    pub fn on_window_moving(&mut self) {
+        if self.moving_programmatic || !self.user_moving {
+            return;
+        }
+        let mut rc = RECT::default();
+        if unsafe { GetWindowRect(self.hwnd, &mut rc) }.is_err() {
+            return;
+        }
+        let mon_idx = window::monitor_index_for_hwnd(self.hwnd, &self.monitors);
+        self.pos_monitor = mon_idx;
+        let mon = self.monitors[mon_idx];
+        let (x_min, x_max, y_min, y_max) = self.pos_bounds(&mon);
+        let s = self.scale;
+        self.pos_x = if x_max > x_min {
+            ((rc.left - x_min) as f32 / (x_max - x_min) as f32).clamp(0.0, 1.0)
+        } else {
+            0.5
+        };
+        let (_, h, _) = self.shape();
+        let pad = self.y_pad_for(h);
+        let visual_top = if self.pos_anchor_bottom {
+            rc.top + ((pad + h - COMPACT.1 as f32) * s).round() as i32
+        } else {
+            rc.top + (pad * s).round() as i32
+        };
+        self.pos_y = if y_max > y_min {
+            ((visual_top - y_min) as f32 / (y_max - y_min) as f32).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        self.update_region();
+        self.dirty = true;
+    }
+
+    pub fn on_window_moved(&mut self) {
+        if !self.user_moving {
+            return;
+        }
+        self.user_moving = false;
+        self.on_window_moving();
+        if let Some(mon) = self.active_monitor() {
+            let (x_min, x_max, y_min, y_max) = self.pos_bounds(&mon);
+            let s = self.scale.max(0.5);
+            let span_x = (x_max - x_min).max(1) as f32 / s;
+            let span_y = (y_max - y_min).max(1) as f32 / s;
+            if self.pos_x * span_x <= 8.0 {
+                self.pos_x = 0.0;
+            } else if (1.0 - self.pos_x) * span_x <= 8.0 {
+                self.pos_x = 1.0;
+            }
+            if self.pos_y * span_y <= 8.0 {
+                self.pos_y = 0.0;
+            } else if (1.0 - self.pos_y) * span_y <= 8.0 {
+                self.pos_y = 1.0;
+            }
+        }
+        self.apply_position();
+        self.save_position();
+    }
+
+    pub fn center_on_screen(&mut self) {
+        self.refresh_monitors();
+        let primary = self.monitors.iter().position(|m| m.primary).unwrap_or(0);
+        self.set_position(primary, 0.5, 0.0, true);
+    }
+
     pub fn ensure_topmost(&self) {
-        if self.hidden {
+        if self.hidden || self.auto_hidden {
             return;
         }
         unsafe {
@@ -1673,8 +1912,19 @@ impl App {
             }
             Id::ResetSettings => self.reset_settings(),
             Id::SettingsTab(i) => self.select_settings_tab(i as usize),
-            // Settings window widgets are handled in settings_click.
-            Id::SettingsClose | Id::SettingsMin | Id::HotkeyRecord | Id::CityInput | Id::MediaSeek => {}
+            Id::PosX(i) => {
+                let x = match i { 0 => 0.0, 1 => 0.5, _ => 1.0 };
+                self.set_position(self.pos_monitor, x, self.pos_y, true);
+            }
+            Id::PosY(i) => {
+                let y = match i { 0 => 0.0, 1 => 0.5, _ => 1.0 };
+                self.set_position(self.pos_monitor, self.pos_x, y, true);
+            }
+            Id::PosMonitor(i) => self.set_position(i as usize, self.pos_x, self.pos_y, true),
+            Id::PosReset => self.center_on_screen(),
+            // Settings window widgets are handled in settings_click / settings_mouse_*.
+            Id::SettingsClose | Id::SettingsMin | Id::HotkeyRecord | Id::CityInput | Id::MediaSeek
+            | Id::PosPreview | Id::PosSliderX | Id::PosSliderY => {}
             Id::Slider | Id::Chip(_) | Id::None => {}
         }
         self.dirty = true;
@@ -1991,7 +2241,8 @@ impl App {
 
     fn slider_to(&mut self, x: f32) {
         let r = scene::SLIDER;
-        let value = (((x - r.x - 7.0) / (r.w - 14.0)) * 100.0).round().clamp(0.0, 100.0) as i32;
+        let local_x = x - self.x_pad();
+        let value = (((local_x - r.x - 7.0) / (r.w - 14.0)) * 100.0).round().clamp(0.0, 100.0) as i32;
         if value != self.tel.volume {
             self.tel.volume = value;
             if let Some(audio) = &self.audio {
@@ -2198,7 +2449,7 @@ impl App {
     //  Settings
     // =====================================================================
 
-    const SWITCH_KEYS: [&'static str; 8] = ["hover_open", "volume_hud", "clipboard_toasts", "bell", "music_bars", "weather_pill", "hotkey", "glow"];
+    const SWITCH_KEYS: [&'static str; 9] = ["hover_open", "volume_hud", "clipboard_toasts", "bell", "music_bars", "weather_pill", "hotkey", "glow", "auto_hide"];
 
     pub fn switch_value(&self, i: u8) -> bool {
         match i {
@@ -2209,7 +2460,8 @@ impl App {
             4 => self.opt_eq,
             5 => self.opt_weather_pill,
             6 => self.opt_hotkey,
-            _ => self.opt_glow,
+            7 => self.opt_glow,
+            _ => self.opt_autohide,
         }
     }
 
@@ -2229,9 +2481,13 @@ impl App {
                 self.opt_hotkey = on;
                 self.apply_hotkey();
             }
-            _ => {
+            7 => {
                 self.opt_glow = on;
                 self.update_media_glow();
+            }
+            _ => {
+                self.opt_autohide = on;
+                self.apply_autohide();
             }
         }
         let to = if on { 1.0 } else { 0.0 };
@@ -2249,7 +2505,8 @@ impl App {
             0 => self.open_delay,
             1 => self.toast_len,
             2 => self.glow_mode,
-            _ => self.glow_strength,
+            3 => self.glow_strength,
+            _ => self.autohide_delay,
         }
     }
 
@@ -2263,17 +2520,19 @@ impl App {
                 self.glow_mode = option;
                 self.update_media_glow();
             }
-            _ => {
+            3 => {
                 self.glow_strength = option;
                 self.update_media_glow();
             }
+            _ => self.autohide_delay = option,
         }
         if animate {
             let key = match control {
                 0 => "open_delay",
                 1 => "toast_length",
                 2 => "glow_mode",
-                _ => "glow_strength",
+                3 => "glow_strength",
+                _ => "autohide_delay",
             };
             state::save_setting(key, &option.to_string());
             self.anims.run(Key::SegPos(control), from, option as f32, 0, 260, Ease::BackOut(0.3));
@@ -2336,6 +2595,8 @@ impl App {
         self.set_segment(1, length, false);
         self.set_segment(2, glow_mode, false);
         self.set_segment(3, glow_strength, false);
+        let autohide_delay = state::load_setting("autohide_delay").and_then(|v| v.parse::<u8>().ok()).unwrap_or(1);
+        self.set_segment(4, autohide_delay, false);
         self.update_media_glow();
     }
 
@@ -2537,6 +2798,7 @@ impl App {
         self.set_segment(2, 0, true);
         self.set_segment(3, 1, true);
         self.update_media_glow();
+        self.center_on_screen();
     }
 
     /// Keeps alerts worth reading later. Level changes and progress steps are left out.
@@ -3109,7 +3371,8 @@ impl App {
             return;
         }
         let bar = scene::MEDIA_BAR;
-        let fraction = ((x - bar.x) / bar.w).clamp(0.0, 1.0);
+        let local_x = x - self.x_pad();
+        let fraction = ((local_x - bar.x) / bar.w).clamp(0.0, 1.0);
         let ms = (self.media.duration_ms as f64 * fraction as f64) as i64;
         media::command(MediaCommand::Seek(ms));
         // Shown right away; the session confirms a moment later.
@@ -3247,11 +3510,15 @@ impl App {
         use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE, SW_SHOWNOACTIVATE};
         if self.hidden {
             self.hidden = false;
+            self.away_ms = 0;
             unsafe {
                 let _ = ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
             }
             self.ensure_topmost();
         } else {
+            // A manual hide replaces whatever auto-hide was doing.
+            self.auto_hidden = false;
+            self.auto_hiding = false;
             self.pinned = false;
             self.blur_input(false);
             self.kill_timer(T_TOAST);
@@ -3263,6 +3530,116 @@ impl App {
                 let _ = ShowWindow(self.hwnd, SW_HIDE);
             }
         }
+        self.dirty = true;
+    }
+
+    // =====================================================================
+    //  Auto-hide
+    // =====================================================================
+
+    /// Starts or stops the cursor poll; switching auto-hide off brings the island back.
+    fn apply_autohide(&mut self) {
+        if self.opt_autohide {
+            self.away_ms = 0;
+            self.set_timer(T_EDGE, EDGE_TICK_MS);
+        } else {
+            self.kill_timer(T_EDGE);
+            if self.auto_hidden || self.auto_hiding {
+                self.auto_show();
+            }
+        }
+    }
+
+    /// True while the cursor rests on the screen edge the island sits at, close to the island.
+    fn cursor_at_edge(&self) -> bool {
+        let Some(mon) = self.active_monitor() else {
+            return false;
+        };
+        let mut p = POINT::default();
+        let mut wr = RECT::default();
+        unsafe {
+            if GetCursorPos(&mut p).is_err() || GetWindowRect(self.hwnd, &mut wr).is_err() {
+                return false;
+            }
+        }
+        let b = mon.bounds;
+        if p.x < b.left || p.x >= b.right || p.y < b.top || p.y >= b.bottom {
+            return false;
+        }
+        // Where the compact island sits on screen.
+        let s = self.scale;
+        let (w, h) = (COMPACT.0 as f32, COMPACT.1 as f32);
+        let left = wr.left + ((CX - w / 2.0 + self.x_pad_for(w)) * s).round() as i32;
+        let top = wr.top + (self.y_pad_for(h) * s).round() as i32;
+        let right = left + (w * s).round() as i32;
+        let bottom = top + (h * s).round() as i32;
+        let m = (EDGE_MARGIN * s).round() as i32;
+        let in_x = p.x >= left - m && p.x <= right + m;
+        let in_y = p.y >= top - m && p.y <= bottom + m;
+        let (dl, _, dr, _) = self.dock_edges();
+        let at_vertical = if self.pos_anchor_bottom { p.y >= b.bottom - EDGE_DEPTH } else { p.y < b.top + EDGE_DEPTH };
+        let at_side = (dl > 0.5 && p.x < b.left + EDGE_DEPTH) || (dr > 0.5 && p.x >= b.right - EDGE_DEPTH);
+        (in_x && at_vertical) || (in_y && at_side)
+    }
+
+    fn on_edge_tick(&mut self) {
+        if !self.opt_autohide || self.hidden {
+            return;
+        }
+        // Toasts, an open island, drags and the settings window keep it on screen.
+        let busy = self.state != VisualState::Compact
+            || self.pinned
+            || self.hold_open
+            || self.drag_over
+            || self.user_moving
+            || self.settings.is_some()
+            || self.mouse_captured();
+        let wanted = busy || self.cursor_at_edge() || (!self.auto_hidden && self.cursor_over_island());
+        if wanted {
+            if self.auto_hidden || self.auto_hiding {
+                self.auto_show();
+            }
+            self.away_ms = 0;
+            return;
+        }
+        if self.auto_hidden {
+            return;
+        }
+        self.away_ms += EDGE_TICK_MS;
+        let after = AUTOHIDE_DELAYS[self.autohide_delay.min(2) as usize];
+        if self.auto_hiding {
+            if self.away_ms >= after + AUTOHIDE_SHRINK_MS {
+                use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE};
+                self.auto_hiding = false;
+                self.auto_hidden = true;
+                unsafe {
+                    let _ = ShowWindow(self.hwnd, SW_HIDE);
+                }
+            }
+        } else if self.away_ms >= after {
+            self.auto_hiding = true;
+            self.kill_timer(T_HOVER);
+            self.set_hot(Id::None);
+            self.set_shape_target(AUTOHIDE_SHAPE);
+            self.dirty = true;
+        }
+    }
+
+    /// Brings the island back: it grows out of the edge into its current shape.
+    fn auto_show(&mut self) {
+        use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_SHOWNOACTIVATE};
+        self.away_ms = 0;
+        self.auto_hiding = false;
+        if self.auto_hidden {
+            self.auto_hidden = false;
+            self.sw.x = AUTOHIDE_SHAPE.0;
+            self.sh.x = AUTOHIDE_SHAPE.1;
+            unsafe {
+                let _ = ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
+            }
+            self.ensure_topmost();
+        }
+        self.set_shape_target(self.state_shape(self.state));
         self.dirty = true;
     }
 
@@ -3332,7 +3709,46 @@ impl App {
         self.dirty = true;
     }
 
+    fn apply_pos_drag(&mut self, id: Id, x: f32, y: f32) {
+        let snap = |v: f32| -> f32 {
+            let v = v.clamp(0.0, 1.0);
+            if v < 0.015 {
+                0.0
+            } else if v > 0.985 {
+                1.0
+            } else if (v - 0.5).abs() < 0.025 {
+                0.5
+            } else {
+                v
+            }
+        };
+        match id {
+            Id::PosPreview => {
+                let mon = self.active_monitor();
+                let box_r = scene::pos_preview_rect(mon.as_ref());
+                let pw = (box_r.w * 0.24).clamp(24.0, 42.0);
+                let ph = 7.0;
+                let nx = snap((x - box_r.x - pw / 2.0) / (box_r.w - pw).max(1.0));
+                let ny = snap((y - box_r.y - ph / 2.0) / (box_r.h - 6.0 - ph).max(1.0));
+                self.set_position(self.pos_monitor, nx, ny, false);
+            }
+            Id::PosSliderX => {
+                let nx = snap((x - scene::POS_SLIDER_X.x) / scene::POS_SLIDER_X.w);
+                self.set_position(self.pos_monitor, nx, self.pos_y, false);
+            }
+            Id::PosSliderY => {
+                let ny = snap((x - scene::POS_SLIDER_Y.x) / scene::POS_SLIDER_Y.w);
+                self.set_position(self.pos_monitor, self.pos_x, ny, false);
+            }
+            _ => {}
+        }
+    }
+
     pub fn settings_mouse_move(&mut self, x: f32, y: f32) {
+        if let Some(drag) = self.settings_drag {
+            self.apply_pos_drag(drag, x, y);
+            return;
+        }
         let Some(s) = self.settings.as_ref() else { return };
         let id = s.hit_test(x, y);
         self.settings_set_hot(id);
@@ -3342,12 +3758,21 @@ impl App {
         let Some(s) = self.settings.as_mut() else { return };
         let id = s.hit_test(x, y);
         s.pressed = id;
+        let hwnd = s.hwnd;
         if id != Id::CityInput {
             self.commit_city();
         }
         if id != Id::HotkeyRecord && self.hotkey_recording {
             self.hotkey_recording = false;
             self.apply_hotkey();
+        }
+        if matches!(id, Id::PosPreview | Id::PosSliderX | Id::PosSliderY) {
+            self.settings_drag = Some(id);
+            unsafe {
+                let _ = SetCapture(hwnd);
+            }
+            self.apply_pos_drag(id, x, y);
+            return;
         }
         if id != Id::None {
             self.anims.to(Key::Press(id), 1.0, 0.94, 80, Ease::Linear);
@@ -3358,7 +3783,18 @@ impl App {
     pub fn settings_mouse_up(&mut self, x: f32, y: f32) {
         let Some(s) = self.settings.as_mut() else { return };
         let id = std::mem::replace(&mut s.pressed, Id::None);
+        let hwnd = s.hwnd;
         let over = s.hit_test(x, y);
+        if let Some(drag) = self.settings_drag.take() {
+            unsafe {
+                if GetCapture() == hwnd {
+                    let _ = ReleaseCapture();
+                }
+            }
+            self.apply_pos_drag(drag, x, y);
+            self.save_position();
+            return;
+        }
         if id == Id::None {
             return;
         }
@@ -3366,6 +3802,16 @@ impl App {
         self.dirty = true;
         if over == id {
             self.settings_click(id);
+        }
+    }
+
+    pub fn settings_capture_lost(&mut self) {
+        if let Some(s) = self.settings.as_mut() {
+            s.pressed = Id::None;
+        }
+        if self.settings_drag.take().is_some() {
+            self.save_position();
+            self.dirty = true;
         }
     }
 
